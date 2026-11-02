@@ -29,11 +29,18 @@
     "physical_app_version": "0.3.5 (8)"
   },
   "runtime": {
-    "deployed": false,
-    "service_restarted": false,
+    "deployed": true,
+    "service_restarted": true,
     "capture_replayed": false,
     "ledger_modified": false,
     "ai_todoist_hold": true,
-    "next_gate": "Separate approval for exact one-file backend replacement and capture-service restart; no capture submission"
+    "next_gate": "User retry and physical capture acceptance; no agent submission",
+    "human_runtime_approval": "Direct user approval on 2026-11-02",
+    "service_active": true,
+    "https_health_ok": true,
+    "original_code_backup_verified": true,
+    "ownership_and_mode_preserved": true,
+    "command_arguments_unchanged": true,
+    "health_profile_unchanged": true
   }
 }

@@ -37,7 +37,7 @@ that the original malformed reply remains unsafe, while an explicit retry of
 the same payload accepts the corrected terminal no-write response. Attempts
 increase normally and no second outbox identity is created.
 
-## Historical release and runtime gate
+## Historical release and verified deployment
 
 Validation passed:
 
@@ -61,14 +61,22 @@ applies exact hunks without fuzzy matching, checks the resulting hash and
 syntax, and emits a backend file plus manifest. It has no deploy or restart
 command. Do not deploy the current combined MVP backend for this fix.
 
-The proposed runtime operation requires separate human approval: verify the
-active source hash, retain an exact code backup with ownership/mode, replace
-only the verified backend file, restart only `hermes-mobile-capture.service`,
-and check service status and `/health`. Restore that exact code backup and
-restart the same unit if startup/health fails. No ledger migration or capture
-submission is part of that operation. The brief restart interrupts service
-availability; code rollback cannot undo an independently submitted capture.
+Jose explicitly approved the one-file runtime update on 2 November 2026. The
+installer verified the active baseline and explicit loopback bind/ledger
+arguments, retained one exclusive code backup with the original hash, replaced
+only the verified backend file atomically, and restarted only
+`hermes-mobile-capture.service`. Its rollback path would restore the original
+code and restart the same unit if startup or health failed.
+
+The update succeeded: the active service, normal-certificate HTTPS `/health`,
+unchanged command arguments/health profile and preserved ownership/mode were
+verified. A subsequent read-only check confirmed the installed release hash
+`f6eae64baaec83a04439919b9ffe54f49f4330ae60cbe55d54412e3e04041c38`
+and the exact original backup. The installer opened no ledger or credential
+file and submitted no capture. No ledger migration was performed.
 
 AI/Todoist remains on human hold. This package changes no reminder/expense
 implementation, server allowlist, authentication, credentials or app binary.
-No deployment, restart, live canary or acceptance claim is made here.
+No live canary or physical capture acceptance is claimed. The user can now
+retry the same saved grocery request; its known legacy clarification is
+presented as no-write `needs_input`, without executing the helper again.
