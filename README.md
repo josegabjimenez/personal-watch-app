@@ -90,6 +90,13 @@ docs/
   subagent-briefs/
 ```
 
+## Backend updates
+
+[Manual backend updates](docs/BACKEND_UPDATES.md) provides synthetic GitHub checks,
+an explicitly triggered release, health verification and rollback on the existing
+VPS. Activation and the first production release require the documented handoff;
+this mechanism does not deploy on push or merge.
+
 ## Local development
 
 Start the staging BFF:

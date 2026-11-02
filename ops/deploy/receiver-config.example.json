@@ -1,0 +1,27 @@
+{
+  "service": "hermes-mobile-capture.service",
+  "targets": {
+    "bff": "/REPLACE_WITH_AUDITED_CODE_DIRECTORY/mobile_capture_staging_server.py"
+  },
+  "state_dir": "/var/lib/personal-watch-deploy",
+  "expected_cmdline": [
+    "/usr/bin/python3",
+    "/REPLACE_WITH_AUDITED_CODE_DIRECTORY/mobile_capture_staging_server.py",
+    "--host", "127.0.0.1",
+    "--port", "8650",
+    "--secret-file", "/REPLACE_WITH_EXISTING_SECRET_PATH",
+    "--ledger", "/REPLACE_WITH_EXISTING_STATE_DIRECTORY/mobile_capture_ledger.sqlite",
+    "--aura-helper", "/REPLACE_WITH_EXISTING_HELPER_PATH/apple_watch_capture.py"
+  ],
+  "health_urls": [
+    "http://127.0.0.1:8650/health",
+    "https://REPLACE_WITH_EXISTING_TAILNET_DNS_NAME:8650/health"
+  ],
+  "expected_health": {
+    "status": "ok",
+    "service": "mobile-capture-v1-staging",
+    "mode": "allowlisted-write",
+    "write_domains": ["aura.grocery_capture"]
+  },
+  "keep": 5
+}

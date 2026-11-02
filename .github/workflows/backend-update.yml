@@ -1,0 +1,138 @@
+name: Manual backend update
+run-name: Backend ${{ inputs.action }} by @${{ github.actor }}
+
+# No push, merge, workflow_run, schedule or PR can deploy.
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: Deliberate operation against the existing backend
+        type: choice
+        options: [status, deploy, rollback, recover]
+        default: status
+        required: true
+      revision:
+        description: Deploy only — full reviewed commit SHA already merged into main
+        type: string
+      expected_current:
+        description: Deploy/rollback — current fingerprint from a fresh status run
+        type: string
+      release_id:
+        description: Rollback only — retained release ID from status or earlier receipt
+        type: string
+      confirmation:
+        description: 'Type: status, recover, deploy <revision>, or rollback <release_id>'
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: personal-watch-production-release
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    if: github.ref == 'refs/heads/main' && vars.WATCH_UPDATES_ENABLED == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      bundle_digest: ${{ steps.bundle.outputs.digest }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate deliberate operation and immutable revision
+        env:
+          ACTION: ${{ inputs.action }}
+          REVISION: ${{ inputs.revision }}
+          EXPECTED: ${{ inputs.expected_current }}
+          RELEASE_ID: ${{ inputs.release_id }}
+          CONFIRMATION: ${{ inputs.confirmation }}
+        run: |
+          python3 - <<'PY'
+          import os, re, subprocess
+          action, revision, release_id = (os.environ[k] for k in ('ACTION', 'REVISION', 'RELEASE_ID'))
+          assert action in ('status', 'deploy', 'rollback', 'recover'), 'invalid action'
+          suffix = revision if action == 'deploy' else release_id if action == 'rollback' else ''
+          assert os.environ['CONFIRMATION'] == (action + ' ' + suffix).strip(), 'confirmation mismatch'
+          if action in ('deploy', 'rollback'):
+              assert re.fullmatch('[0-9a-f]{64}', os.environ['EXPECTED']), 'current fingerprint required'
+          if action == 'rollback':
+              assert re.fullmatch('[0-9a-f]{64}', release_id), 'release ID required'
+          if action == 'deploy':
+              assert re.fullmatch('[0-9a-f]{40}', revision), 'full SHA required'
+              subprocess.run(['git', 'merge-base', '--is-ancestor', revision, os.environ['GITHUB_SHA']], check=True)
+              subprocess.run(['git', 'worktree', 'add', '--detach', os.environ['RUNNER_TEMP'] + '/candidate', revision], check=True)
+          PY
+      - name: Recheck exact candidate with synthetic fixtures, without production credentials
+        if: inputs.action == 'deploy'
+        working-directory: ${{ runner.temp }}/candidate
+        run: |
+          PYTHONPATH=backend python3 -m unittest discover -s backend/tests -p 'test_*.py'
+          python3 -m unittest discover -s ops/deploy/tests -p 'test_*.py'
+      - name: Build reproducible code-only bundle
+        id: bundle
+        if: inputs.action == 'deploy'
+        env:
+          REVISION: ${{ inputs.revision }}
+        run: |
+          python3 ops/deploy/build_bundle.py --revision "$REVISION" --output "$RUNNER_TEMP/release.json"
+          python3 - <<'PY'
+          import hashlib, os
+          from pathlib import Path
+          digest = hashlib.sha256((Path(os.environ['RUNNER_TEMP']) / 'release.json').read_bytes()).hexdigest()
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write('digest=' + digest + '\n')
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: inputs.action == 'deploy'
+        with:
+          name: backend-release-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/release.json
+          retention-days: 3
+          if-no-files-found: error
+
+  release:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    environment: watch-production
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          sparse-checkout: ops/deploy
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        if: inputs.action == 'deploy'
+        with:
+          name: backend-release-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/release
+      - name: Verify prepared artifact before exposing the transport key
+        if: inputs.action == 'deploy'
+        env:
+          BUNDLE_DIGEST: ${{ needs.prepare.outputs.bundle_digest }}
+          REVISION: ${{ inputs.revision }}
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          raw = (Path(os.environ['RUNNER_TEMP']) / 'release/release.json').read_bytes()
+          assert hashlib.sha256(raw).hexdigest() == os.environ['BUNDLE_DIGEST'], 'bundle mismatch'
+          assert json.loads(raw)['revision'] == os.environ['REVISION'], 'revision mismatch'
+          PY
+      - name: Fixed receiver request over pinned SSH host identity
+        env:
+          ACTION: ${{ inputs.action }}
+          EXPECTED: ${{ inputs.expected_current }}
+          RELEASE_ID: ${{ inputs.release_id }}
+          WATCH_SSH_HOST: ${{ secrets.WATCH_SSH_HOST }}
+          WATCH_SSH_PORT: ${{ secrets.WATCH_SSH_PORT }}
+          WATCH_SSH_USER: ${{ secrets.WATCH_SSH_USER }}
+          WATCH_SSH_PRIVATE_KEY: ${{ secrets.WATCH_SSH_PRIVATE_KEY }}
+          WATCH_SSH_KNOWN_HOSTS: ${{ secrets.WATCH_SSH_KNOWN_HOSTS }}
+        run: |
+          python3 ops/deploy/send_release.py --action "$ACTION" --expected-current "$EXPECTED" --release-id "$RELEASE_ID" --bundle "$RUNNER_TEMP/release/release.json"
