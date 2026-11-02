@@ -111,6 +111,111 @@ final class OutboxDeliveryServiceTests: XCTestCase {
         XCTAssertEqual(items.first?.lastDeliveryPath, .directHTTPS)
     }
 
+    func testLegacyGroceryRefusalFailsSafelyUntilSameRequestReceivesNormalizedNoWriteResponse() async throws {
+        let fixture = try await makeFixture(
+            requestID: "delivery-grocery-legacy-refusal",
+            route: .grocery,
+            context: CaptureContext(dryRun: false, allowWrite: true, allowFireflyWrite: false),
+            captureText: "synthetic grocery item"
+        )
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let canonicalBody = try JSONEncoder.captureEncoder().encode(fixture.payload)
+        func client(returning body: Data) -> WebhookClient {
+            WebhookClient(
+                endpoint: URL(string: "https://example.invalid/webhooks/mobile-capture-v1")!,
+                session: URLSessionStub { request in
+                    XCTAssertEqual(request.httpBody, canonicalBody)
+                    XCTAssertEqual(request.value(forHTTPHeaderField: WebhookHeaders.requestID), fixture.payload.requestID)
+                    let response = try XCTUnwrap(
+                        HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)
+                    )
+                    return (body, response)
+                }
+            )
+        }
+
+        let legacyBody = Data("""
+        {
+          "status":"needs_confirmation",
+          "dry_run":true,
+          "write_committed":false,
+          "request_id":"delivery-grocery-legacy-refusal",
+          "domain":"aura.grocery_capture",
+          "display_message":"No parece un artículo de mercado · no cambié nada",
+          "question":"¿Qué artículo quieres agregar o marcar como comprado?",
+          "plan":{
+            "would_write":false,
+            "side_effects":["notion.official_grocery_list.plan_only"],
+            "notes":"Would update official grocery list; unchecked means missing."
+          },
+          "gates_missing":["server domain allowlist","external write adapter"]
+        }
+        """.utf8)
+        let firstAttempt = OutboxDeliveryService(
+            store: fixture.store,
+            client: client(returning: legacyBody),
+            nowISO8601: { "2026-07-13T22:00:01Z" }
+        )
+        do {
+            _ = try await firstAttempt.deliver(payload: fixture.payload, secret: "unit-test-secret")
+            XCTFail("A live grocery must not accept the legacy dry-run refusal")
+        } catch let failure as OutboxDeliveryFailure {
+            XCTAssertEqual(failure, .unsafeResponse)
+        }
+        let failedItems = try await fixture.store.loadAll()
+        XCTAssertEqual(failedItems.count, 1)
+        let failed = try XCTUnwrap(failedItems.first)
+        XCTAssertEqual(failed.payload, fixture.payload)
+        XCTAssertEqual(failed.id, fixture.payload.requestID)
+        XCTAssertEqual(failed.status, .failed)
+        XCTAssertEqual(failed.attempts, 1)
+        XCTAssertEqual(failed.lastError, "unsafe_response")
+        XCTAssertNil(failed.lastResponse)
+        let pending = try await fixture.store.loadDeliverable()
+        XCTAssertEqual(pending.map(\.id), [fixture.payload.requestID])
+
+        let normalizedBody = Data("""
+        {
+          "status":"needs_input",
+          "dry_run":false,
+          "write_committed":false,
+          "request_id":"delivery-grocery-legacy-refusal",
+          "domain":"aura.grocery_capture",
+          "display_message":"No identifiqué el artículo · no cambié nada",
+          "question":"¿Qué artículo quieres agregar al mercado?",
+          "plan":{"would_write":false,"side_effects":[],"notes":"Live grocery clarification; no external write was attempted."},
+          "gates_missing":[]
+        }
+        """.utf8)
+        let retry = OutboxDeliveryService(
+            store: fixture.store,
+            client: client(returning: normalizedBody),
+            nowISO8601: { "2026-07-13T22:00:02Z" }
+        )
+        let response = try await retry.deliver(payload: fixture.payload, secret: "unit-test-secret")
+        XCTAssertEqual(response.status, "needs_input")
+        XCTAssertEqual(response.dryRun, false)
+        XCTAssertEqual(response.writeCommitted, false)
+        XCTAssertEqual(response.plan?.wouldWrite, false)
+        XCTAssertEqual(response.plan?.notes, "Live grocery clarification; no external write was attempted.")
+        XCTAssertEqual(response.displayMessage, "No identifiqué el artículo · no cambié nada")
+        XCTAssertEqual(response.question, "¿Qué artículo quieres agregar al mercado?")
+
+        let reopened = FileOutboxStore(fileURL: fixture.directory.appendingPathComponent("outbox.json"))
+        let retainedItems = try await reopened.loadAll()
+        XCTAssertEqual(retainedItems.count, 1)
+        let retained = try XCTUnwrap(retainedItems.first)
+        XCTAssertEqual(retained.payload, fixture.payload)
+        XCTAssertEqual(retained.id, failed.id)
+        XCTAssertEqual(retained.status, .sent)
+        XCTAssertEqual(retained.attempts, 2)
+        XCTAssertEqual(retained.lastResponse, response)
+        XCTAssertEqual(retained.lastDeliveryPath, .directHTTPS)
+        XCTAssertNil(retained.lastError)
+        let remaining = try await reopened.loadDeliverable()
+        XCTAssertTrue(remaining.isEmpty)
+    }
+
     func testCommittedReminderWriteWithCalendarFailSoftMarksItemSent() async throws {
         let fixture = try await makeFixture(
             requestID: "delivery-reminder-write",

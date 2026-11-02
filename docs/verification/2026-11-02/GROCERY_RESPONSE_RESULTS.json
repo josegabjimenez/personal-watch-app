@@ -1,0 +1,39 @@
+{
+  "date": "2026-11-02",
+  "scope": "Exact legacy grocery clarification response compatibility",
+  "deployed_baseline_sha256": "3746e4c73689cc8ae5ab80958db51802b6a51491238a5c68c0b6585125c9f7a4",
+  "prepared_historical_release_sha256": "f6eae64baaec83a04439919b9ffe54f49f4330ae60cbe55d54412e3e04041c38",
+  "read_only_diagnosis": {
+    "exact_request_found": true,
+    "correlation_matches": true,
+    "legacy_response_and_plan_shape_match": true,
+    "status": "needs_confirmation",
+    "dry_run": true,
+    "write_committed": false,
+    "plan_would_write": false
+  },
+  "validation": {
+    "current_backend_tests_passed": 166,
+    "historical_release_test_methods_passed": 11,
+    "historical_unchanged_tests_inside_wrapper_passed": 12,
+    "historical_obsolete_envelope_test_explicitly_replaced": 1,
+    "shared_swift_tests_passed": 66,
+    "final_exact_envelope_focused_swift_test_passed": true,
+    "deterministic_release_build_and_verify_passed": true,
+    "independent_review": "No consequential findings"
+  },
+  "preserved": {
+    "original_cached_row_and_sqlite_bytes_in_synthetic_tests": true,
+    "payload_hash_conflict_check": true,
+    "client_production_safety_checks": true,
+    "physical_app_version": "0.3.5 (8)"
+  },
+  "runtime": {
+    "deployed": false,
+    "service_restarted": false,
+    "capture_replayed": false,
+    "ledger_modified": false,
+    "ai_todoist_hold": true,
+    "next_gate": "Separate approval for exact one-file backend replacement and capture-service restart; no capture submission"
+  }
+}

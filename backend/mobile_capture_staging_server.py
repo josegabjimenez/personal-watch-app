@@ -1537,6 +1537,74 @@ def execute_expense_capture(
     )
 
 
+def _live_grocery_clarification_response(payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "status": "needs_input",
+        "dry_run": False,
+        "write_committed": False,
+        "request_id": payload["request_id"],
+        "domain": "aura.grocery_capture",
+        "display_message": "No identifiqué el artículo · no cambié nada",
+        "question": "¿Qué artículo quieres agregar al mercado?",
+        "plan": {
+            "side_effects": [],
+            "would_write": False,
+            "notes": "Live grocery clarification; no external write was attempted.",
+        },
+        "gates_missing": [],
+    }
+
+
+def correct_legacy_grocery_clarification(
+    payload: dict[str, Any], cached: dict[str, Any], ledger_status: str
+) -> dict[str, Any]:
+    """Present one proven old no-write reply safely; never alter its ledger row."""
+    route = payload.get("route")
+    context = payload.get("context")
+    request_id = payload.get("request_id")
+    if (
+        ledger_status != "needs_confirmation"
+        or not isinstance(route, dict)
+        or (route.get("agent"), route.get("intent"), route.get("domain"))
+        != ("aura", "grocery", "aura.grocery_capture")
+        or not isinstance(context, dict)
+        or context.get("dry_run") is not False
+        or context.get("allow_write") is not True
+        or context.get("allow_firefly_write") is not False
+        or any(context.get(field, False) is not False for field in (
+            "user_confirmation", "user_cancellation", "requires_confirmation"
+        ))
+        or context.get("confirmation_token") is not None
+        or context.get("operation_id") is not None
+        or not isinstance(request_id, str)
+        or not request_id.strip()
+        or not isinstance(cached, dict)
+        or set(cached) != {
+            "status", "dry_run", "write_committed", "request_id", "domain",
+            "display_message", "question", "plan", "gates_missing"
+        }
+    ):
+        return cached
+    plan = cached["plan"]
+    if (
+        cached["status"] != "needs_confirmation"
+        or cached["request_id"] != request_id
+        or cached["domain"] != "aura.grocery_capture"
+        or cached["dry_run"] is not True
+        or cached["write_committed"] is not False
+        or cached["display_message"] != "No parece un artículo de mercado · no cambié nada"
+        or cached["question"] != "¿Qué artículo quieres agregar o marcar como comprado?"
+        or cached["gates_missing"] != ["server domain allowlist", "external write adapter"]
+        or not isinstance(plan, dict)
+        or set(plan) != {"side_effects", "would_write", "notes"}
+        or plan["would_write"] is not False
+        or plan["side_effects"] != ["notion.official_grocery_list.plan_only"]
+        or plan["notes"] != "Would update official grocery list; unchecked means missing."
+    ):
+        return cached
+    return _live_grocery_clarification_response(payload)
+
+
 def execute_grocery_capture(
     payload: dict[str, Any],
     cfg: Config,
@@ -1822,6 +1890,7 @@ class MobileCaptureHandler(BaseHTTPRequestHandler):
                             return
                         if old_status not in {LEDGER_WAITING_FOR_SERVER_GATE, "processing"}:
                             cached = json.loads(old_response)
+                            cached = correct_legacy_grocery_clarification(payload, cached, old_status)
                             cached = current_cached_expense_preview(conn, cached)
                             # Keep complete previews and terminal no-write reasons
                             # intact. Only proven writes/runs become duplicate.
