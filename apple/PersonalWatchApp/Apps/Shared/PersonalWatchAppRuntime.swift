@@ -113,6 +113,10 @@ private final class PersonalWatchSyntheticUIURLProtocol: URLProtocol {
             ]
             switch payload.route {
             case .grocery:
+                if scenario == "grocery_network_failure" {
+                    fail(URLError(.cannotConnectToHost))
+                    return
+                }
                 body["display_message"] = "Mercado actualizado ✅ · leche (faltante)"
                 body["external_ids"] = ["notion_block_id": "synthetic-grocery-block"]
                 body["plan"] = ["would_write": true, "side_effects": ["notion.official_grocery_list.write"]]

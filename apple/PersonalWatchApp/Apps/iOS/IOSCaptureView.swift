@@ -53,6 +53,16 @@ struct IOSCaptureView: View {
                     }
                     .accessibilityIdentifier("capture.send")
                     .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isBusy || deliveryInFlight)
+
+                    if canStartAnotherGrocery {
+                        Button("Otro artículo") {
+                            startAnotherGrocery()
+                        }
+                        .accessibilityIdentifier("capture.anotherGrocery")
+                        Text("El artículo anterior queda guardado. Usa esta opción para un artículo distinto.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
 
@@ -83,13 +93,28 @@ struct IOSCaptureView: View {
         }
     }
 
+    private var canStartAnotherGrocery: Bool {
+        action == .grocery && queuedPayload != nil && !isBusy && !deliveryInFlight
+    }
+
+    @MainActor
+    private func startAnotherGrocery() {
+        guard canStartAnotherGrocery else { return }
+        // Detach only this editor. The original outbox item remains unchanged.
+        queuedPayload = nil
+        text = ""
+        statusMessage = "El artículo anterior queda guardado · escribe un artículo distinto"
+    }
+
     @MainActor
     private func capture() async {
         guard !isBusy, !deliveryInFlight, action != .general else { return }
         let capturedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !capturedText.isEmpty else { return }
+        let retryMode: CaptureRetryMode = action == .grocery && queuedPayload != nil
+            ? .manualGroceryRecovery : .standard
         let payload = queuedPayload ?? makePayload(text: capturedText)
-        await submit(payload)
+        await submit(payload, retryMode: retryMode)
     }
 
     @MainActor
@@ -105,8 +130,10 @@ struct IOSCaptureView: View {
     }
 
     @MainActor
-    private func submit(_ payload: CapturePayloadV1) async {
+    private func submit(_ payload: CapturePayloadV1, retryMode: CaptureRetryMode = .standard) async {
+        guard !isBusy else { return }
         isBusy = true
+        statusMessage = nil
         defer { isBusy = false }
         let store = FileOutboxStore(fileURL: PersonalWatchAppRuntime.outboxURL)
         var cancellationMessage: String?
@@ -133,7 +160,7 @@ struct IOSCaptureView: View {
                 return
             }
             let delivery = OutboxDeliveryService(store: store, client: PersonalWatchAppRuntime.makeClient(baseURL: credentials.baseURL))
-            let response = try await delivery.deliver(payload: canonical, secret: credentials.secret)
+            let response = try await delivery.deliver(payload: canonical, secret: credentials.secret, retryMode: retryMode)
             queuedPayload = nil
             deliveryInFlight = false
             if response.status == "needs_confirmation",
@@ -166,7 +193,8 @@ struct IOSCaptureView: View {
     private func refreshDeliveryState(store: FileOutboxStore, requestID: String?) async {
         guard let requestID else { return }
         do {
-            deliveryInFlight = try await store.loadAll().first(where: { $0.id == requestID })?.status == .sending
+            let status = try await store.loadAll().first(where: { $0.id == requestID })?.status
+            deliveryInFlight = status == nil || status == .sending
         } catch {
             deliveryInFlight = true
         }

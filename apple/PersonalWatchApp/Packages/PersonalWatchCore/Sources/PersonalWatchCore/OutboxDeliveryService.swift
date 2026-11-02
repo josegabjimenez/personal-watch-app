@@ -70,9 +70,10 @@ public actor OutboxDeliveryService {
 
     public func deliver(
         payload: CapturePayloadV1,
-        secret: String
+        secret: String,
+        retryMode: CaptureRetryMode = .standard
     ) async throws -> CaptureResponseV1 {
-        let claim = try await store.claimDelivery(payload: payload, now: nowISO8601())
+        let claim = try await store.claimDelivery(payload: payload, now: nowISO8601(), retryMode: retryMode)
         if case .alreadySent(let response) = claim {
             guard let response, Self.isSafe(response: response, for: payload) else {
                 throw OutboxStoreError.notDeliverable

@@ -88,6 +88,17 @@ struct WatchCaptureView: View {
                     .tint(accent)
                     .disabled(trimmedText.isEmpty || isSaving || queuedIsSending)
                     .accessibilityIdentifier("capture.send")
+
+                    if canStartAnotherGrocery {
+                        Button("Otro artículo") {
+                            startAnotherGrocery()
+                        }
+                        .buttonStyle(.bordered)
+                        .accessibilityIdentifier("capture.anotherGrocery")
+                        Text("El artículo anterior permanece en Historial. Usa esta opción para un artículo distinto.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
                 }
 
                 if let statusMessage {
@@ -111,6 +122,19 @@ struct WatchCaptureView: View {
 
     private var trimmedText: String {
         text.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var canStartAnotherGrocery: Bool {
+        action == .grocery && queuedPayload != nil && !isSaving && !queuedIsSending
+    }
+
+    @MainActor
+    private func startAnotherGrocery() {
+        guard canStartAnotherGrocery else { return }
+        // Detach only this editor. The original outbox item remains unchanged.
+        queuedPayload = nil
+        text = ""
+        statusMessage = "El artículo anterior permanece en Historial · escribe un artículo distinto"
     }
 
     private var prompt: String {
@@ -191,6 +215,8 @@ struct WatchCaptureView: View {
             }
         )
         let isInitialCapture = !userConfirmation && !userCancellation
+        let retryMode: CaptureRetryMode = action == .grocery && isInitialCapture && queuedPayload != nil
+            ? .manualGroceryRecovery : .standard
         let newPayload = factory.makePayload(
             kind: action,
             text: capturedText,
@@ -236,7 +262,8 @@ struct WatchCaptureView: View {
                 payload: payload,
                 secret: credentials.secret,
                 baseURL: credentials.baseURL,
-                outbox: outbox
+                outbox: outbox,
+                retryMode: retryMode
             )
 
             queuedPayload = nil

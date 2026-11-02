@@ -29,9 +29,58 @@ final class PersonalWatchAppUITests: XCTestCase {
     func testGroceryCaptureShowsCommittedResult() {
         launch()
         enterCapture("grocery", text: "leche")
+        XCTAssertFalse(app.buttons["capture.anotherGrocery"].exists)
         app.buttons["capture.send"].tap()
         assertStatusContains("Mercado actualizado")
         XCTAssertFalse(app.buttons["expense.confirm"].exists)
+        XCTAssertFalse(app.buttons["capture.anotherGrocery"].exists)
+    }
+
+    func testExhaustedGroceryCanRetryOriginalAfterRelaunch() {
+        launch(scenario: "grocery_network_failure")
+        enterCapture("grocery", text: "leche")
+        failGroceryCapture(attempts: 5)
+
+        relaunchAndOpenCapture("grocery")
+        let field = app.textFields["capture.text"]
+        XCTAssertEqual(field.value as? String, "leche")
+        XCTAssertFalse(field.isEnabled)
+        XCTAssertEqual(app.buttons["capture.send"].label, "Reintentar")
+
+        // The sixth explicit attempt must reach the local transport fixture,
+        // rather than fail at the normal five-attempt delivery cap.
+        app.buttons["capture.send"].tap()
+        assertStatusContains("Sin conexión")
+        XCTAssertEqual(field.value as? String, "leche")
+        XCTAssertFalse(field.isEnabled)
+        XCTAssertTrue(app.buttons["capture.anotherGrocery"].isEnabled)
+    }
+
+    func testAnotherGroceryClearsEditorAndPreservesOriginalAfterRelaunch() {
+        launch(scenario: "grocery_network_failure")
+        enterCapture("grocery", text: "leche")
+        failGroceryCapture(attempts: 5)
+
+        app.buttons["capture.anotherGrocery"].tap()
+        let field = app.textFields["capture.text"]
+        XCTAssertTrue(field.isEnabled)
+        XCTAssertTrue(["", "Ej. arroz"].contains(field.value as? String ?? "<missing>"))
+        XCTAssertFalse(app.buttons["capture.send"].isEnabled)
+        assertStatusContains("queda guardado")
+        field.tap()
+        field.typeText("arroz")
+        XCTAssertEqual(field.value as? String, "arroz")
+        XCTAssertTrue(app.buttons["capture.send"].isEnabled)
+        XCTAssertFalse(app.buttons["capture.anotherGrocery"].exists)
+
+        // An unsent distinct draft never replaces or acknowledges the old row.
+        relaunchAndOpenCapture("grocery")
+        XCTAssertEqual(field.value as? String, "leche")
+        XCTAssertFalse(field.isEnabled)
+        XCTAssertTrue(app.buttons["capture.anotherGrocery"].isEnabled)
+        app.buttons["capture.anotherGrocery"].tap()
+        XCTAssertTrue(field.isEnabled)
+        XCTAssertTrue(["", "Ej. arroz"].contains(field.value as? String ?? "<missing>"))
     }
 
     func testReminderShowsBogotaScheduleAndPendingAlerts() {
@@ -120,11 +169,26 @@ final class PersonalWatchAppUITests: XCTestCase {
         XCTAssertTrue(app.buttons["expense.confirm"].waitForExistence(timeout: 5))
     }
 
+    private func failGroceryCapture(attempts: Int) {
+        for _ in 0..<attempts {
+            let send = app.buttons["capture.send"]
+            XCTAssertTrue(send.isEnabled)
+            send.tap()
+            assertStatusContains("Sin conexión")
+            XCTAssertTrue(send.isEnabled)
+            XCTAssertTrue(app.buttons["capture.anotherGrocery"].isEnabled)
+        }
+    }
+
     private func relaunchAndOpenExpense() {
+        relaunchAndOpenCapture("expense")
+    }
+
+    private func relaunchAndOpenCapture(_ action: String) {
         app.terminate()
         // The same case argument deliberately retains only this test's outbox.
         app.launch()
-        let entry = app.buttons["capture.expense"]
+        let entry = app.buttons["capture.\(action)"]
         XCTAssertTrue(entry.waitForExistence(timeout: 5))
         entry.tap()
         XCTAssertTrue(app.textFields["capture.text"].waitForExistence(timeout: 5))

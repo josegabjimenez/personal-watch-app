@@ -67,14 +67,15 @@ enum WatchCaptureDeliveryCoordinator {
         payload: CapturePayloadV1,
         secret: String,
         baseURL: URL,
-        outbox: FileOutboxStore
+        outbox: FileOutboxStore,
+        retryMode: CaptureRetryMode = .standard
     ) async throws -> CaptureResponseV1 {
         let direct = OutboxDeliveryService(
             store: outbox,
             client: PersonalWatchAppRuntime.makeClient(baseURL: baseURL)
         )
         do {
-            return try await direct.deliver(payload: payload, secret: secret)
+            return try await direct.deliver(payload: payload, secret: secret, retryMode: retryMode)
         } catch let failure as OutboxDeliveryFailure {
             guard
                 payload.context.dryRun,

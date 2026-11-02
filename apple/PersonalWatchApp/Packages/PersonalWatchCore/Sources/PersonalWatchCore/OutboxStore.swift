@@ -93,6 +93,13 @@ public enum OutboxDeliveryClaim: Sendable {
     case alreadySent(CaptureResponseV1?)
 }
 
+/// Batch delivery stays bounded. Only a deliberate retry of a selected grocery
+/// may recover a connection failure after that limit, retaining its identity.
+public enum CaptureRetryMode: Equatable, Sendable {
+    case standard
+    case manualGroceryRecovery
+}
+
 public actor FileOutboxStore {
     private let fileURL: URL
     private let encoder: JSONEncoder
@@ -174,7 +181,8 @@ public actor FileOutboxStore {
         }
     }
 
-    public func claimDelivery(payload: CapturePayloadV1, now: String, maxAttempts: Int = 5) throws -> OutboxDeliveryClaim {
+    public func claimDelivery(payload: CapturePayloadV1, now: String, maxAttempts: Int = 5,
+                              retryMode: CaptureRetryMode = .standard) throws -> OutboxDeliveryClaim {
         try withExclusiveFileLock {
             var items = try loadAllUnlocked()
             guard let index = items.firstIndex(where: { $0.id == payload.requestID }) else {
@@ -193,7 +201,16 @@ public actor FileOutboxStore {
             }
             if items[index].status == .sent { return .alreadySent(items[index].lastResponse) }
             guard items[index].status != .sending else { throw OutboxStoreError.deliveryInProgress }
-            guard [.pending, .failed].contains(items[index].status), items[index].attempts < maxAttempts else {
+            let item = items[index]
+            let connectionErrors = ["network_-1003", "network_-1004", "network_-1006", "network_-1009"]
+            let manualRecovery = retryMode == .manualGroceryRecovery
+                && item.status == .failed
+                && payload.route == .grocery
+                && !payload.context.dryRun
+                && OutboxDeliveryService.isSafeRequest(payload)
+                && connectionErrors.contains(item.lastError ?? "")
+            guard [.pending, .failed].contains(item.status), item.attempts < Int.max,
+                  item.attempts < maxAttempts || manualRecovery else {
                 throw OutboxStoreError.notDeliverable
             }
             items[index].status = .sending
