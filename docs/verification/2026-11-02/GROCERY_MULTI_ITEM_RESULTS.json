@@ -1,0 +1,71 @@
+{
+  "date": "2026-11-02",
+  "scope": "Approved multi-item Mercado implementation and reviewable historical release; no activation",
+  "base_commit": "a3f562e03fe6bc13f619c954c225f7c41123a431",
+  "installed_client_source_baseline": "52867ae09e2caec66f28046f91b9bfd5ab030d04",
+  "backend": {
+    "tests": 229,
+    "passed": 229,
+    "failures": 0,
+    "errors": 0,
+    "parser_methods": 10,
+    "adapter_methods": 31,
+    "batch_methods": 22,
+    "command": "PYTHONPATH=backend:backend/tests python3 -m unittest discover -s backend/tests -v"
+  },
+  "swift": {
+    "full_tests": 70,
+    "passed": 70,
+    "failures": 0,
+    "installed_source_focused_tests": 4,
+    "installed_source_focused_passed": 4,
+    "production_client_sources_changed": false,
+    "reinstall_required_for_protocol": false
+  },
+  "historical_package": {
+    "offline_test_methods": 16,
+    "passed": 16,
+    "runtime_files": 4,
+    "manifest": "ops/hotfixes/grocery-multi-item/release_manifest.json",
+    "manifest_sha256": "9d34903345cac05cf695bc2839640e9aa9c773dd7a7261e6d5de0d7159a21f0e"
+  },
+  "independent_review": {
+    "remaining_findings": 0,
+    "covered": [
+      "actual-helper contract",
+      "quantity/compound handling",
+      "partial/lost-ACK/restart",
+      "missing recovery state",
+      "concurrent preflight compare-and-set",
+      "terminal transport state monotonicity",
+      "historical AST scope and import closure"
+    ]
+  },
+  "wire_fixtures": {
+    "count": 5,
+    "reproduced_by_actual_engine_adapter": true,
+    "synthetic_only": true
+  },
+  "privacy": {
+    "private_identifiers_in_candidate": false,
+    "full_deployed_helper_committed": false,
+    "credentials_committed": false
+  },
+  "production": {
+    "deployed": false,
+    "service_restarted": false,
+    "capture_submitted_or_replayed": false,
+    "shopping_list_changed": false,
+    "firefly_changed": false,
+    "ai_todoist_hold": true
+  },
+  "limitations": [
+    "Unknown remote acknowledgement with no candidate ID remains uncertain and requires reconciliation; it is never blindly repeated.",
+    "Remote writes are per-item, not an atomic multi-item transaction.",
+    "Ambiguous phrases require clarification before mutation.",
+    "Existing client shows generic HTTP503 while detailed partial counts remain server-side.",
+    "No live multi-item acceptance or physical retest claimed.",
+    "Separate update automation default single-file mapping is insufficient for this four-file package.",
+    "Old single-item runtime is not a safe rollback for in-flight batch state."
+  ]
+}

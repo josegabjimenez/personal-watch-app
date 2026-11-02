@@ -1,0 +1,67 @@
+{
+  "display_message": "Mercado: 3 confirmados · 3 agregados · 0 actualizados · 0 ya estaban",
+  "domain": "aura.grocery_capture",
+  "dry_run": false,
+  "duplicate": false,
+  "external_ids": {
+    "already_present": 0,
+    "created": 3,
+    "grocery_items": [
+      {
+        "action": "created",
+        "block_id": "synthetic-created-1",
+        "checked": false,
+        "destination": "synthetic-official-list",
+        "item": "2 litros de leche",
+        "operation_id": "grocery-7039d95279e3b558cbe9125ec4b169878238e6aaa4c10b0a7d54ae233b197818",
+        "parent_id": "synthetic-others",
+        "plan_hash": "5102f26d8869f04ab9cebc59c6ed152936894f8b5295f3175f96409319f16285",
+        "requested_item": "2 litros de leche",
+        "write_committed": true
+      },
+      {
+        "action": "created",
+        "block_id": "synthetic-created-2",
+        "checked": false,
+        "destination": "synthetic-official-list",
+        "item": "6 huevos",
+        "operation_id": "grocery-5beb7b05ca669b77ef46a27bb4e56214f6466c799c11e798754c94f40ef4c373",
+        "parent_id": "synthetic-others",
+        "plan_hash": "c43b2861d1ca3dec132a8ba552ead6b810dbe4ec7e6091fe3cef0e9ca7b4bac8",
+        "requested_item": "6 huevos",
+        "write_committed": true
+      },
+      {
+        "action": "created",
+        "block_id": "synthetic-created-3",
+        "checked": false,
+        "destination": "synthetic-official-list",
+        "item": "pan integral",
+        "operation_id": "grocery-217c7fe37341e303e22bbd78bb4e7504740cdd47ab272bc84819bb9ad5948135",
+        "parent_id": "synthetic-others",
+        "plan_hash": "e0ad6a20a90165c69b61bb4e82a142af65b6c1b243c17134b114d5437c44a913",
+        "requested_item": "pan integral",
+        "write_committed": true
+      }
+    ],
+    "item_count": 3,
+    "notion_block_ids": [
+      "synthetic-created-1",
+      "synthetic-created-2",
+      "synthetic-created-3"
+    ],
+    "updated": 0
+  },
+  "gates_missing": [],
+  "plan": {
+    "notes": "Every frozen grocery item has a durable verified receipt.",
+    "side_effects": [
+      "notion.official_grocery_list.write"
+    ],
+    "would_write": true
+  },
+  "question": null,
+  "request_id": "grocery-batch-contract",
+  "status": "committed",
+  "write_committed": true
+}
