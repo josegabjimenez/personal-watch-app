@@ -26,7 +26,15 @@ jobs:
         run: PYTHONPATH=backend python3 -m unittest discover -s backend/tests -p 'test_*.py'
       - name: Release failure, rollback and concurrency regression
         run: python3 -m unittest discover -s ops/deploy/tests -p 'test_*.py'
+      - name: Match the sealed fixture's Python 3.9 AST representation
+        id: legacy_python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.9'
+          update-environment: false
       - name: Exact sealed historical grocery package and its offline regression
+        env:
+          LEGACY_PYTHON: ${{ steps.legacy_python.outputs.python-path }}
         run: |
           git fetch --no-tags --depth=1 origin 1fe67948051f1d25140e13900d51275c498e0770
-          python3 ops/deploy/build_bundle.py --revision 1fe67948051f1d25140e13900d51275c498e0770 --verify-tests --output "$RUNNER_TEMP/sealed-grocery-review.json"
+          "$LEGACY_PYTHON" ops/deploy/build_bundle.py --revision 1fe67948051f1d25140e13900d51275c498e0770 --verify-tests --output "$RUNNER_TEMP/sealed-grocery-review.json"

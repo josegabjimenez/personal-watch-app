@@ -74,13 +74,21 @@ jobs:
         run: |
           PYTHONPATH=backend python3 -m unittest discover -s backend/tests -p 'test_*.py'
           python3 -m unittest discover -s ops/deploy/tests -p 'test_*.py'
+      - name: Match the sealed fixture's Python 3.9 AST representation
+        id: legacy_python
+        if: inputs.action == 'deploy'
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.9'
+          update-environment: false
       - name: Reproduce sealed four-file package and test its actual historical runtime
         id: bundle
         if: inputs.action == 'deploy'
         env:
           REVISION: ${{ inputs.revision }}
+          LEGACY_PYTHON: ${{ steps.legacy_python.outputs.python-path }}
         run: |
-          python3 ops/deploy/build_bundle.py --revision "$REVISION" --verify-tests --output "$RUNNER_TEMP/release.json"
+          "$LEGACY_PYTHON" ops/deploy/build_bundle.py --revision "$REVISION" --verify-tests --output "$RUNNER_TEMP/release.json"
           python3 - <<'PY'
           import hashlib, os
           from pathlib import Path

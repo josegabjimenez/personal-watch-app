@@ -41,6 +41,12 @@ Import resolution and `--ledger` help succeeded without creating a database or
 opening a listener. Python compilation, `actionlint` 1.7.12 and whitespace checks
 passed. CI additionally runs the unchanged historical backend regression.
 
+The first Linux CI pass established the 13 historical backend and 53 deployment
+checks on default Python 3.12, but the original helper fixture's pinned AST digest
+requires Python 3.9. The workflow now selects 3.9 only for the sealed-package check;
+fixture/runtime/seal bytes remain unchanged. The official `setup-python` action tag
+and full commit pin were verified. No production interpreter change is proposed.
+
 Synthetic deployment fixtures cover:
 
 - Exact source/manifest bytes, hashes, paths, revision and four-file agreement;

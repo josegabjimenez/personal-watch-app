@@ -63,6 +63,12 @@ credentials exist only in the final, separately gated SSH job, never in build/te
 jobs. The code-only Actions artifact expires after three days and its digest is
 checked before the transport key is exposed.
 
+The legacy fixture pins an AST serialization produced by Python 3.9. CI uses an
+explicit Python 3.9 executable for this package check; Python 3.12 adds AST fields
+and cannot reproduce that fixture digest. The fixture and seal are unchanged.
+Automation/backend regressions still run on the runner's default interpreter.
+This selects a CI toolchain only and does not change the VPS interpreter or settings.
+
 ## Atomic activation and compatible recovery
 
 The receiver stages all four files plus their manifest in a new immutable directory
