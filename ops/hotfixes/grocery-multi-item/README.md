@@ -1,10 +1,13 @@
-# Historical grocery multi-item release — preparation only
+# Historical grocery multi-item release and guarded initial activation
 
 This package extends the exact deployed BFF whose SHA256 is
 `f6eae64baaec83a04439919b9ffe54f49f4330ae60cbe55d54412e3e04041c38`.
 It does not contain the current full MVP backend, financial confirmation flow,
 reminder AI/Todoist integration, credentials, private payloads or service data.
-Nothing here activates or deploys a service.
+The builder is offline. The separate standalone `install_release.py` defaults
+to read-only preflight; only its explicit `--apply` mode can stop the intended
+service and activate this exact sealed package after the existing authorization
+and final installer review are satisfied.
 
 The output contains four runtime files and one manifest:
 
@@ -68,6 +71,64 @@ directory, verifies all files, and only then renames that directory to the
 requested output. Existing outputs are never intentionally replaced. Any source
 or overlay drift after sealing fails closed. A new reviewed manifest is required
 for a changed release; never refresh pins merely to make a failing build pass.
+
+## Guarded initial activation installer
+
+`install_release.py` is self-contained and needs no Git checkout, builder or
+application imports on the target host. It pins the exact sealed manifest and
+four runtime hashes. This is an initial-activation tool: it requires the deployed
+f6 baseline, the pinned external helper, no grocery journal, no sibling grocery
+modules, no pending grocery transport state and no existing backup for this
+release. It preserves the current unit, command arguments, configuration and
+secret locations. It does not enable AI, other routes or a paid Apple workflow.
+
+With the real existing paths substituted, its default is preflight only:
+
+```sh
+python3 install_release.py --package /path/to/sealed-release \
+  --backup-root /path/to/private-backups \
+  --health-url https://existing-host.example/health
+```
+
+After the concrete installer/package have final review and activation is
+already authorized, the same command with `--apply` performs the change:
+
+```sh
+python3 install_release.py --package /path/to/sealed-release \
+  --backup-root /path/to/private-backups \
+  --health-url https://existing-host.example/health --apply
+```
+
+The deployment lock and parent SQLite drain are bounded to five seconds. The
+installer rechecks source/helper hashes and the same process before stopping
+only `hermes-mobile-capture.service` while holding the drain reservation. After
+the unit is confirmed off, it releases that reservation and backs up through a
+separate read-only SQLite source connection. The old BFF backup, database backup,
+quick checks and hashes are verified before any code replacement. One exclusive
+backup directory is retained per sealed release; no cleanup/retention job is
+created and no old backup is overwritten.
+
+All four files are staged and installed while stopped, with the BFF replaced
+last. Startup verification checks hashes, owner/group/mode, unchanged arguments
+and the exact existing health profile over normal HTTPS. Redirects and proxy
+settings are disabled; no credential or capture endpoint is requested.
+
+A failure before code changes restarts the unchanged runtime when safe. A
+failure after activation stops the unit and permits old-code rollback only if
+the journal remains absent or has verified empty known schema, and no pending
+parent remains. New batch/item data, unknown schema or missing state needed by a
+pending parent produce `attention`/`unsafe_rollback`: the compatible code remains
+and the service stays stopped for review. Databases are never restored, deleted,
+reset or replayed by this installer. A recovered activation reports
+`rolled_back`; successful activation reports `installed`. Reports contain error
+codes and verification metadata, never request IDs, captured text or secrets.
+
+Run its synthetic controller/filesystem/SQLite fault tests locally:
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover \
+  -s ops/hotfixes/grocery-multi-item -p test_install_release.py -v
+```
 
 ## Runtime and data boundaries
 
