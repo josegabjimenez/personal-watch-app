@@ -1,0 +1,70 @@
+{
+  "date_bogota": "2026-11-03",
+  "approval": "Explicit direct human approval to merge PR4 and install the four-file grocery update, verified backups, one-service restart and non-effect verification",
+  "pr4_merge": "77885a5cc4d018b7e5b49266fd909e591078cf48",
+  "correction_pr": "https://github.com/josegabjimenez/personal-watch-app/pull/5",
+  "correction_pr_merged_by_this_execution": false,
+  "installer_sha256": "1136a2d05bf70d9a301944a079c17940894ca77b45f05aa39ab6a75e8eaa4071",
+  "manifest_sha256": "9d34903345cac05cf695bc2839640e9aa9c773dd7a7261e6d5de0d7159a21f0e",
+  "runtime_hashes": {
+    "grocery_capture.py": "30638a74cc96c4ab71a7d3df8e89552ca1180798715fe6c04be33b4dd58ef943",
+    "grocery_helper_adapter.py": "2894998b54a22bbc3b398a801f8cf5a080a22bcd5fec51678ccd4d8f7baacbde",
+    "grocery_item_parser.py": "bf0097c86e43ca8b3349a96bc2ebf65f8d5d2e93eca4e9e3856ff6a2d134fdc7",
+    "mobile_capture_staging_server.py": "309602498c2a9ccf3186e7c336ed9ff5cc2fe3b693866fc1fbfdb18c1b0d5100"
+  },
+  "validation": {
+    "focused_tests": 43,
+    "passed": 43,
+    "independent_passed": 43,
+    "remaining_findings": 0
+  },
+  "first_attempt": {
+    "installer_sha256": "0b4f5636dfd64b0696a4d08558bbc8ff7ecd0ddb2a1bbe416c661c3c6b5bc8df",
+    "result": "attention/recovery_failed",
+    "cause": "service_arguments",
+    "original_service_recovered_and_verified": true,
+    "data_restored": false,
+    "live_timing_cause_proven": false
+  },
+  "resume": {
+    "preflight": "preflight_ok",
+    "result": "installed",
+    "original_backup_reused_unchanged": true,
+    "new_backup_created": false
+  },
+  "post_install": {
+    "status": "verified_installed",
+    "unit_active": true,
+    "all_runtime_hashes_match": true,
+    "all_metadata_matches_original": true,
+    "arguments_unchanged": true,
+    "helper_unchanged": true,
+    "backup_code_hash_verified": true,
+    "backup_data_hash_verified": true,
+    "backup_marker_journal_absent": true,
+    "backup_members_exact": true,
+    "backup_private": true,
+    "database_integrity": {
+      "backup": true,
+      "live": true
+    },
+    "live_data_unchanged": true,
+    "live_backup_counts_match": true,
+    "journal_absent": true,
+    "https_health_http": 200,
+    "capture_submitted": false,
+    "data_restored": false
+  },
+  "health_profile": {
+    "mode": "allowlisted-write",
+    "service": "mobile-capture-v1-staging",
+    "status": "ok",
+    "write_domains": [
+      "aura.grocery_capture"
+    ]
+  },
+  "app_reinstalled": false,
+  "updater_activated": false,
+  "ai_todoist_resumed": false,
+  "human_two_item_acceptance": "pending"
+}

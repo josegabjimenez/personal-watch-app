@@ -83,7 +83,36 @@ All 43 focused tests passed, including the original 24 faults and 19 readiness
 and immutable-resume cases. An independent run repeated all 43 successfully on
 the same frozen source and found no unresolved recovery or scope issue.
 
-Current outcome: original backend restored and healthy; corrected executor
-prepared for the same approved installation after fresh resume preflight and
-normal action review. Jose's intended two-item Watch result remains pending
-and is not an agent end-to-end acceptance claim.
+## Verified deployment
+
+The corrected executor passed strict live resume preflight, then normal action
+review allowed the same explicitly approved four-file installation. It reused
+the original verified backup unchanged and reported `installed`. No alternate
+backup directory or second data snapshot was used. The readiness correction is
+reviewable in [PR #5](https://github.com/josegabjimenez/personal-watch-app/pull/5);
+that PR remains open and was not merged by this execution.
+
+A separate read-only post-install check verified:
+
+| Check | Result |
+| --- | --- |
+| All four runtime hashes | Exact sealed manifest matches |
+| All four owner/group/mode tuples | Match the original code backup |
+| Service | Active and running; same arguments and helper |
+| HTTPS health | 200; exact previous grocery-only allowlisted profile |
+| Original code/data backup | Exact three members, matching hashes, private permissions |
+| Both SQLite integrity checks | Passed |
+| Live data | Exact pre-backup hash; unchanged aggregate counts |
+| Grocery batch journal | Still absent; no capture was submitted |
+| Database restoration | None |
+
+The historical BFF now has SHA256
+`309602498c2a9ccf3186e7c336ed9ff5cc2fe3b693866fc1fbfdb18c1b0d5100`.
+The other three hashes remain those in the sealed manifest. An independent
+receipt review found no missing material installation evidence.
+
+The backend rollout is complete. No app reinstall, capture resend, real grocery
+test write, finance/Todoist operation, updater activation or AI resumption was
+performed. Jose can now send one useful intended two-item request from the
+installed Watch app. Mercado and the whole MVP remain awaiting human acceptance;
+this infrastructure readback does not establish a live capture result.
