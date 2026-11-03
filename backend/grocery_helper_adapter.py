@@ -26,6 +26,14 @@ _PLAN_FIELDS = frozenset({
     "version", "helper_sha256", "destination", "item", "key", "action",
     "target_id", "parent_id", "expected_text", "expected_checked", "plan_hash",
 })
+_SEMANTIC_PLAN_FIELDS = _PLAN_FIELDS | {"catalog_snapshot", "batch_items", "batch_index", "batch_hash", "mark_missing"}
+_CATALOG_FIELDS = frozenset({"id", "text", "checked", "parent_id"})
+_GENERIC_HEADS = frozenset({
+    "leche", "arroz", "huevo", "tomate", "banano", "banana", "palta", "aguacate", "papa", "patata", "azucar",
+    "aceite", "frijol", "zanahoria", "cebolla", "yogur", "papel", "servilleta", "limon", "pollo", "polvo",
+    "pavo", "coco", "coca", "harina", "avena", "mantequilla", "galleta", "queso", "detergente", "jabon",
+    "cafe", "sal", "pan", "lenteja", "manzana", "pera", "fresa", "uva", "mango", "durazno", "mora", "platano", "champu",
+})
 _STATES = {"prepared", "dispatching", "uncertain", "committed", "rejected"}
 _QUANTITY_NUMBER = (
     r"(?:[0-9]+(?:[.,][0-9]+)?(?:/[0-9]+)?|[¼½¾]|"
@@ -52,6 +60,8 @@ class GroceryAdapterError(RuntimeError):
         self.needs_input = code in {
             "invalid_items", "invalid_item", "unclean_item", "duplicate_item",
             "ambiguous_item", "quantity_conflict", "ambiguous_destination",
+            "invalid_catalog", "catalog_too_large", "catalog_drift", "invalid_candidate",
+            "constraint_conflict", "bought_candidate",
         }
         super().__init__(message)
 
@@ -133,6 +143,10 @@ class GroceryAdapter:
                 status TEXT NOT NULL CHECK(status IN ('prepared','dispatching','uncertain','committed','rejected')),
                 candidate_id TEXT, receipt_json TEXT, error_code TEXT
             )""")
+            conn.execute("""CREATE TABLE IF NOT EXISTS grocery_semantic_batches (
+                operation_id TEXT PRIMARY KEY, batch_id TEXT NOT NULL,
+                batch_index INTEGER NOT NULL
+            )""")
         self.journal_path.chmod(0o600)
 
     def _check_helper(self):
@@ -144,6 +158,8 @@ class GroceryAdapter:
             raise GroceryAdapterError("helper_fingerprint_mismatch", "El helper o el destino de mercado cambió; no hice cambios")
 
     def _validate_plan(self, plan: dict) -> dict:
+        if isinstance(plan, dict) and type(plan.get("version")) is int and plan["version"] == 2:
+            return self._validate_semantic_plan(plan)
         if not isinstance(plan, dict) or set(plan) != _PLAN_FIELDS:
             raise GroceryAdapterError("invalid_plan", "El plan de mercado no es válido")
         value = {key: item for key, item in plan.items() if key != "plan_hash"}
@@ -259,6 +275,274 @@ class GroceryAdapter:
         if quantified and product:
             keys.add(self.helper.grocery_semantic_key(product))
         return keys - {""}
+
+    def _validate_catalog(self, catalog: Any) -> list[dict]:
+        """Validate a complete, bounded snapshot; never silently truncate it."""
+        if not isinstance(catalog, list):
+            raise GroceryAdapterError("invalid_catalog", "No pude verificar el catálogo de mercado completo")
+        if len(catalog) > 200:
+            raise GroceryAdapterError("catalog_too_large", "La lista tiene más de doscientos artículos; necesito acotar la consulta")
+        seen = set()
+        for candidate in catalog:
+            if (
+                not isinstance(candidate, dict) or set(candidate) != _CATALOG_FIELDS
+                or not _resource_id(candidate.get("id")) or candidate["id"] in seen
+                or not _resource_id(candidate.get("parent_id"))
+                or type(candidate.get("checked")) is not bool
+                or not isinstance(candidate.get("text"), str)
+                or not 1 <= len(candidate["text"]) <= 1800 or not candidate["text"].strip()
+                or any(ord(char) < 32 for char in candidate["text"])
+            ):
+                raise GroceryAdapterError("invalid_catalog", "La lista contiene un artículo que no pude verificar; necesito aclararlo")
+            seen.add(candidate["id"])
+        return sorted((dict(candidate) for candidate in catalog), key=lambda candidate: candidate["id"])
+
+    def _catalog_from_blocks(self, blocks: list[dict]) -> list[dict]:
+        candidates = []
+        for block in blocks:
+            if block["type"] != "to_do":
+                continue
+            value = block.get("to_do")
+            if (
+                not isinstance(value, dict) or type(value.get("checked")) is not bool
+                or block.get("archived") is not False or block.get("in_trash") is not False
+                or not isinstance(value.get("rich_text"), list)
+                or not all(isinstance(part, dict) and isinstance(part.get("plain_text"), str)
+                           for part in value["rich_text"])
+            ):
+                raise GroceryAdapterError("invalid_catalog", "La lista contiene un artículo archivado o no verificable")
+            candidates.append({"id": block["id"], "text": self.helper.grocery_text(block),
+                               "checked": value["checked"], "parent_id": block["_grocery_parent_id"]})
+        return self._validate_catalog(candidates)
+
+    def catalog(self) -> list[dict]:
+        """Return every grocery to-do candidate without making any mutations."""
+        self._check_helper()
+        with self.helper.capture_operation_lock():
+            try:
+                return self._catalog_from_blocks(self._blocks())
+            except GroceryAdapterError as exc:
+                if exc.code == "invalid_list":
+                    raise GroceryAdapterError("invalid_catalog", "No pude verificar el catálogo de mercado completo") from exc
+                raise
+
+    @staticmethod
+    def _one_typo(left: str, right: str) -> bool:
+        # Only a product head may tolerate one edit. Qualifiers never do.
+        if min(len(left), len(right)) < 4 or abs(len(left) - len(right)) > 1:
+            return False
+        if len(left) == len(right):
+            differences = [index for index in range(len(left)) if left[index] != right[index]]
+            return len(differences) <= 1 or (len(differences) == 2
+                and differences[1] == differences[0] + 1
+                and left[differences[0]] == right[differences[1]]
+                and left[differences[1]] == right[differences[0]])
+        shorter, longer = sorted((left, right), key=len)
+        return any(longer[:index] + longer[index + 1:] == shorter for index in range(len(longer)))
+
+    def _product_signature(self, text: str) -> tuple[str, tuple[str, ...]]:
+        product, _ = self._quantity_product(text)
+        product = re.sub(r"\bsin lactosa\b", "deslactosada", product)
+        product = re.sub(r"\bdeslactosados?\b", "deslactosada", product)
+        tokens = re.findall(r"[a-z0-9]+", product)
+        while tokens and tokens[0] in {"el", "la", "los", "las", "un", "una"}:
+            tokens.pop(0)
+        singular = {"huevos": "huevo", "papas": "papa", "patatas": "patata",
+                    "bananas": "banana", "bananos": "banano", "panes": "pan",
+                    "limones": "limon", "frijoles": "frijol", "frijolitos": "frijol"}
+        if not tokens:
+            return "", ()
+        head = tokens[0]
+        tokens[0] = singular.get(head, head[:-1] if head.endswith("s") and head[:-1] in _GENERIC_HEADS else head)
+        # Product plurals are distinct from brands. Never stem arbitrary
+        # qualifiers: Parmalat/Parmalats and Shoulders/Shoulder stay distinct.
+        reviewed_qualifiers = {"enteras": "entera", "enteros": "entero", "chontos": "chonto",
+                               "deslactosadas": "deslactosada", "deslactosados": "deslactosada"}
+        tokens[1:] = [reviewed_qualifiers.get(token, token) for token in tokens[1:]]
+        # This is a veto guard after the model's ID proposal, never a selector.
+        # Unknown synonyms deliberately need clarification. Every remaining
+        # token (brand, diet, variety, size, conjunction) must be preserved.
+        aliases = {"patata": "papa", "banana": "banano", "jitomate": "tomate",
+                   "aguacate": "palta"}
+        qualifiers = tokens[1:]
+        # Keep modifier associations: "chocolate negro relleno blanco" and
+        # "chocolate blanco relleno negro" are different products. The known
+        # lactose attribute may move past a brand only without negation or
+        # relation words that could change what the attribute describes.
+        if not ({"no", "sin", "con", "ni", "excepto", "de", "y"} & set(qualifiers)):
+            lactose = [token for token in qualifiers if token == "deslactosada"]
+            qualifiers = [token for token in qualifiers if token != "deslactosada"] + lactose
+        return aliases.get(tokens[0], tokens[0]), tuple(qualifiers)
+
+    def _same_product_head(self, left: str, right: str) -> bool:
+        if left == right:
+            return True
+        # A one-edit proposal is only verifiable against a known generic
+        # product head. Brand-only names and two distinct known products must
+        # stay exact, even when the model considers them similar.
+        known = left if left in _GENERIC_HEADS else right if right in _GENERIC_HEADS else ""
+        return bool(known and len(known) >= 5 and (left in _GENERIC_HEADS) != (right in _GENERIC_HEADS)
+                    and self._one_typo(left, right))
+
+    def _semantic_equivalent(self, left: str, right: str) -> bool:
+        left_head, left_qualifiers = self._product_signature(left)
+        right_head, right_qualifiers = self._product_signature(right)
+        return bool(left_head and right_head and self._same_product_head(left_head, right_head)
+                    and left_qualifiers == right_qualifiers)
+
+    def _semantic_destination(self, blocks: list[dict]) -> str:
+        others = [block for block in blocks if block.get("type") == "toggle"
+                  and self.helper.norm(self.helper._block_text(block)) == "otros"]
+        if (len(others) != 1 or others[0].get("archived") is not False
+                or others[0].get("in_trash") is not False):
+            raise GroceryAdapterError("ambiguous_destination", "Necesito un único grupo Otros en la lista oficial")
+        return others[0]["id"]
+
+    def _semantic_item_core(self, selection: dict, catalog: list[dict], new_parent: str, *, mark_missing: bool = False) -> dict:
+        if (not isinstance(selection, dict) or set(selection) != {"text", "candidate_id"}
+                or not isinstance(selection.get("text"), str)):
+            raise GroceryAdapterError("invalid_items", "La selección de artículos de mercado no es válida")
+        item, candidate_id = selection["text"], selection["candidate_id"]
+        if (not item.strip() or item != item.strip() or len(item) > 1800
+                or any(ord(char) < 32 for char in item) or not self._keys(item)):
+            raise GroceryAdapterError("invalid_item", "Necesito un artículo de mercado válido")
+        if self.helper._clean_grocery_item(item) != item:
+            raise GroceryAdapterError("unclean_item", "Necesito el nombre del artículo sin instrucciones de destino")
+        product, _ = self._quantity_product(item)
+        head, qualifiers = self._product_signature(item)
+        product_words = re.findall(r"[a-z0-9]+", product)
+        has_product = any(re.search(r"[a-z]", word)
+                          and not _MEASURE_START.fullmatch(word)
+                          and not _LEADING_AMOUNT.fullmatch(word)
+                          and word not in {"de", "y", "el", "la", "los", "las", "unos", "unas"}
+                          for word in product_words)
+        if not re.search(r"[a-z]", head) or not has_product:
+            raise GroceryAdapterError("invalid_item", "Necesito el producto además de su cantidad o unidad")
+        family = [candidate for candidate in catalog
+                  if self._same_product_head(head, self._product_signature(candidate["text"])[0])]
+        equivalents = [candidate for candidate in catalog if self._semantic_equivalent(item, candidate["text"])]
+        if len(equivalents) > 1:
+            raise GroceryAdapterError("ambiguous_item", "Hay varios artículos equivalentes; necesito que aclares cuál usar")
+        if not qualifiers and any(self._product_signature(candidate["text"])[1] for candidate in family):
+            raise GroceryAdapterError("ambiguous_item", "La lista tiene una presentación de ese producto; necesito que indiques cuál")
+        if candidate_id is None:
+            if equivalents:
+                raise GroceryAdapterError("invalid_candidate", "Ese producto puede existir en la lista; necesito confirmar el artículo")
+            action, parent_id, text, checked = "created", new_parent, item, False
+        else:
+            if not _resource_id(candidate_id):
+                raise GroceryAdapterError("invalid_candidate", "La identidad del artículo seleccionado no es válida")
+            matches = [candidate for candidate in catalog if candidate["id"] == candidate_id]
+            if len(matches) != 1:
+                raise GroceryAdapterError("invalid_candidate", "El artículo seleccionado no pertenece al catálogo verificado")
+            target = matches[0]
+            text = target["text"]
+            if not self._semantic_equivalent(item, text):
+                raise GroceryAdapterError("constraint_conflict", "La marca, variedad o presentación no coincide; necesito que la aclares")
+            if (self._quantity_product(item)[1] or self.helper._rich_grocery_item(item)) and self.helper.norm(item) != self.helper.norm(text):
+                raise GroceryAdapterError("quantity_conflict", "La cantidad solicitada difiere del artículo existente; necesito que la confirmes")
+            checked = target["checked"]
+            if checked and not mark_missing:
+                raise GroceryAdapterError("bought_candidate", "Ese artículo figura como comprado; necesito que confirmes si vuelve a faltar")
+            action, parent_id = ("updated" if checked else "already_present"), target["parent_id"]
+        return {"version": 2, "mark_missing": mark_missing, "helper_sha256": PINNED_HELPER_SHA256,
+                "destination": self.destination, "item": item,
+                "key": self.helper.grocery_semantic_key(item), "action": action,
+                "target_id": candidate_id, "parent_id": parent_id,
+                "expected_text": text, "expected_checked": checked}
+
+    def _semantic_batch(self, items: Any, catalog: list[dict], new_parent: str, *, mark_missing: bool = False) -> list[dict]:
+        if not isinstance(items, list) or not 1 <= len(items) <= 30:
+            raise GroceryAdapterError("invalid_items", "Necesito entre uno y treinta artículos de mercado")
+        if type(mark_missing) is not bool:
+            raise GroceryAdapterError("invalid_items", "La confirmación de artículos faltantes no es válida")
+        cores = [self._semantic_item_core(item, catalog, new_parent, mark_missing=mark_missing) for item in items]
+        if len(catalog) + sum(core["action"] == "created" for core in cores) > 200:
+            raise GroceryAdapterError("catalog_too_large", "El pedido supera el límite verificable del catálogo; necesito acotarlo")
+        for index, current in enumerate(cores):
+            for prior in cores[:index]:
+                if ((current["target_id"] is not None and current["target_id"] == prior["target_id"])
+                        or (current["target_id"] is None and prior["target_id"] is None
+                            and self._semantic_equivalent(current["item"], prior["item"]))):
+                    raise GroceryAdapterError("duplicate_item", "El lote repite un artículo; necesito que lo aclares")
+        batch_hash = _hash({"catalog": catalog, "items": items, "mark_missing": mark_missing})
+        plans = []
+        for index, core in enumerate(cores):
+            value = dict(core, catalog_snapshot=catalog, batch_items=items,
+                         batch_index=index, batch_hash=batch_hash)
+            plans.append(dict(value, plan_hash=_hash(value)))
+        return plans
+
+    def prepare_semantic(self, items: list[dict], catalog: list[dict], *, mark_missing: bool = False) -> dict:
+        """Freeze grounded model proposals against the exact complete catalog.
+
+        This method performs no inference. The caller validates that every text
+        is an exact substring of the request before proposing an existing ID.
+        Only the trusted caller may attest explicit missing intent using
+        mark_missing; the model's item schema cannot provide that flag.
+        """
+        snapshot = self._validate_catalog(catalog)
+        self._check_helper()
+        with self.helper.capture_operation_lock():
+            blocks = self._blocks()
+            if self._catalog_from_blocks(blocks) != snapshot:
+                raise GroceryAdapterError("catalog_drift", "La lista cambió durante la consulta; necesito revisar el pedido de nuevo")
+            # A destination is only needed if the proposal actually adds a row.
+            creates = isinstance(items, list) and any(isinstance(item, dict) and item.get("candidate_id") is None for item in items)
+            new_parent = self._semantic_destination(blocks) if creates else self.destination
+            plans = self._semantic_batch(items, snapshot, new_parent, mark_missing=mark_missing)
+        return {"version": 2, "helper_sha256": PINNED_HELPER_SHA256,
+                "destination": self.destination, "items": plans}
+
+    def _validate_semantic_plan(self, plan: dict) -> dict:
+        try:
+            if (set(plan) != _SEMANTIC_PLAN_FIELDS or type(plan["batch_index"]) is not int
+                    or type(plan["mark_missing"]) is not bool):
+                raise ValueError("invalid semantic plan fields")
+            snapshot = self._validate_catalog(plan["catalog_snapshot"])
+            if snapshot != plan["catalog_snapshot"] or not _resource_id(plan["parent_id"]):
+                raise ValueError("invalid semantic snapshot")
+            plans = self._semantic_batch(plan["batch_items"], snapshot, plan["parent_id"], mark_missing=plan["mark_missing"])
+            if not 0 <= plan["batch_index"] < len(plans) or plans[plan["batch_index"]] != plan:
+                raise ValueError("semantic plan changed")
+        except (GroceryAdapterError, TypeError, ValueError, KeyError, IndexError) as exc:
+            raise GroceryAdapterError("invalid_plan", "El plan semántico de mercado no es válido") from exc
+        return json.loads(_json(plan))
+
+    def _semantic_preflight(self, operation_id: str, plan: dict, blocks: list[dict]) -> None:
+        expected = list(plan["catalog_snapshot"])
+        with self._db() as conn:
+            membership = conn.execute("SELECT * FROM grocery_semantic_batches WHERE operation_id=?", (operation_id,)).fetchone()
+            if membership is None and len(plan["batch_items"]) > 1:
+                raise GroceryAdapterError("catalog_drift", "El lote completo debe registrarse antes de ejecutar sus artículos")
+            if membership is not None:
+                if membership["batch_index"] != plan["batch_index"]:
+                    raise GroceryAdapterError("journal_corrupt", "El diario contiene un orden de lote incompatible")
+                siblings = conn.execute("""SELECT o.* FROM grocery_operations o
+                    JOIN grocery_semantic_batches b ON b.operation_id=o.operation_id
+                    WHERE b.batch_id=? AND b.batch_index<? ORDER BY b.batch_index""",
+                    (membership["batch_id"], plan["batch_index"])).fetchall()
+                # An interrupted sibling must be reconciled before continuing.
+                if len(siblings) != plan["batch_index"]:
+                    raise GroceryAdapterError("catalog_drift", "No pude verificar los artículos anteriores del lote")
+                for sibling in siblings:
+                    sibling_plan = self._validate_plan(json.loads(sibling["plan_json"]))
+                    checked_row = self._row(conn, sibling["operation_id"], sibling_plan)
+                    if (sibling_plan.get("batch_hash") != plan["batch_hash"] or checked_row["status"] != "committed"):
+                        raise GroceryAdapterError("catalog_drift", "Necesito confirmar los artículos anteriores del lote")
+                    if sibling_plan["action"] == "created":
+                        expected.append({"id": checked_row["candidate_id"], "text": sibling_plan["expected_text"],
+                                         "checked": False, "parent_id": sibling_plan["parent_id"]})
+                    elif sibling_plan["action"] == "updated":
+                        matches = [candidate for candidate in expected if candidate["id"] == sibling_plan["target_id"]]
+                        if len(matches) != 1 or matches[0]["checked"] is not True:
+                            raise GroceryAdapterError("catalog_drift", "No pude verificar el artículo que volvió a faltar")
+                        expected = [dict(candidate, checked=False) if candidate["id"] == sibling_plan["target_id"] else candidate
+                                    for candidate in expected]
+        if self._catalog_from_blocks(blocks) != sorted(expected, key=lambda candidate: candidate["id"]):
+            raise GroceryAdapterError("catalog_drift", "La lista de mercado cambió; no hice más cambios")
+        if plan["action"] == "created" and self._semantic_destination(blocks) != plan["parent_id"]:
+            raise GroceryAdapterError("catalog_drift", "El grupo de destino cambió; no hice cambios")
 
     def _item_plan(self, item: str, blocks: list[dict]) -> dict:
         if not isinstance(item, str) or not item.strip() or len(item) > 1800 or any(ord(c) < 32 for c in item):
@@ -376,12 +660,31 @@ class GroceryAdapter:
             if not isinstance(operation, (tuple, list)) or len(operation) != 2:
                 raise GroceryAdapterError("invalid_operations", "El lote de operaciones de mercado no es válido")
             validated.append((_operation_id(operation[0]), self._validate_plan(operation[1])))
+        semantic = any(plan["version"] == 2 for _, plan in validated)
+        if semantic:
+            first = validated[0][1]
+            if (any(plan["version"] != 2 for _, plan in validated)
+                    or len({operation_id for operation_id, _ in validated}) != len(validated)
+                    or len(validated) != len(first["batch_items"])
+                    or any(plan["batch_index"] != index or plan["batch_hash"] != first["batch_hash"]
+                           for index, (_, plan) in enumerate(validated))
+                    or any(plan["action"] == "created" and plan["parent_id"] != next(
+                        (candidate["parent_id"] for _, candidate in validated if candidate["action"] == "created"), plan["parent_id"])
+                        for _, plan in validated)):
+                raise GroceryAdapterError("invalid_operations", "Necesito registrar el lote semántico completo y en orden")
+            batch_id = _hash({"operations": [(operation_id, plan["plan_hash"]) for operation_id, plan in validated]})
         with self._db() as conn:
             conn.execute("BEGIN IMMEDIATE")
             for operation_id, plan in validated:
                 if self._row(conn, operation_id, plan) is None:
                     conn.execute("INSERT INTO grocery_operations VALUES (?, ?, ?, ?, 'prepared', NULL, NULL, NULL)",
                                  (operation_id, plan["plan_hash"], _json(plan), plan["destination"]))
+                if semantic:
+                    membership = conn.execute("SELECT * FROM grocery_semantic_batches WHERE operation_id=?", (operation_id,)).fetchone()
+                    if membership is not None and (membership["batch_id"] != batch_id or membership["batch_index"] != plan["batch_index"]):
+                        raise GroceryAdapterError("operation_conflict", "La operación ya pertenece a otro lote semántico")
+                    conn.execute("INSERT OR IGNORE INTO grocery_semantic_batches VALUES (?, ?, ?)",
+                                 (operation_id, batch_id, plan["batch_index"]))
             conn.commit()
 
     def _mark(self, operation_id: str, status: str, code: str | None = None, candidate: str | None = None):
@@ -441,7 +744,10 @@ class GroceryAdapter:
                 conn.commit()
             try:
                 self._check_helper()
-                if self._item_plan(plan["item"], self._blocks()) != plan:
+                blocks = self._blocks()
+                if plan["version"] == 2:
+                    self._semantic_preflight(operation_id, plan, blocks)
+                elif self._item_plan(plan["item"], blocks) != plan:
                     raise GroceryAdapterError("destination_or_item_drift", "El artículo o su grupo cambió; no hice cambios")
                 if plan["action"] == "already_present":
                     self._readback(plan["target_id"], plan)

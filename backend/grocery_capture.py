@@ -11,10 +11,12 @@ from typing import Any
 
 from grocery_helper_adapter import GroceryAdapter, GroceryAdapterError, child_operation_id
 from grocery_item_parser import GroceryParseError, MAX_ITEMS, parse_grocery_items
+import grocery_ai
 
 
 DOMAIN = "aura.grocery_capture"
 PLAN_VERSION = 1
+AI_PLAN_VERSION = 2
 
 
 class GroceryPending(RuntimeError):
@@ -125,8 +127,31 @@ def load_batch(path: Path, request_id: str, payload_hash: str) -> tuple[dict, di
         raise GroceryConflict("request_id_conflict")
     try:
         plan = json.loads(row[1])
-        if sha(canonical(plan)) != row[2] or type(plan["version"]) is not int or plan["version"] != PLAN_VERSION:
+        if sha(canonical(plan)) != row[2] or type(plan["version"]) is not int or plan["version"] not in {PLAN_VERSION, AI_PLAN_VERSION}:
             raise ValueError("invalid frozen plan")
+        if plan["version"] == AI_PLAN_VERSION and row[4] in {"preflight", "interpreting", "interpreted", "no_write"}:
+            phase = plan.get("phase")
+            if phase not in {"preflight", "interpreting", "interpreted"} or (row[4] != "no_write" and phase != row[4]):
+                raise ValueError("invalid AI phase")
+            if phase == "preflight" and set(plan) != {"version", "phase"}:
+                raise ValueError("invalid AI preflight")
+            if phase in {"interpreting", "interpreted"} and not isinstance(plan.get("catalog"), list):
+                raise ValueError("invalid AI catalog")
+            if phase == "interpreted" and not isinstance(plan.get("interpretation"), dict):
+                raise ValueError("invalid interpretation")
+            if phase == "interpreted" and type(plan.get("mark_missing")) is not bool:
+                raise ValueError("invalid missing intent")
+            if row[4] != "no_write":
+                if row[3] is not None:
+                    raise ValueError("unexpected AI receipt")
+                return plan, None
+            response = json.loads(row[3])
+            if (response.get("request_id") != request_id or response.get("domain") != DOMAIN
+                    or response.get("status") not in {"needs_input", "rejected"}
+                    or response.get("dry_run") is not False or response.get("write_committed") is not False
+                    or response.get("plan", {}).get("would_write") is not False):
+                raise ValueError("invalid AI no-write receipt")
+            return plan, response
         if row[4] in {"preflight", "no_write"}:
             if plan != {"version": PLAN_VERSION, "phase": "preflight"}:
                 raise ValueError("invalid preflight marker")
@@ -170,12 +195,76 @@ def replay_response(plan: dict, response: dict) -> dict:
                 display_message=f"Mercado: {len(plan['prepared']['items'])} artículos confirmados · sin repetir envío")
 
 
-def store_no_write(path: Path, request_id: str, payload_hash: str, response: dict):
+def store_no_write(path: Path, request_id: str, payload_hash: str, response: dict, *, expected_status: str = "preflight"):
     # A refusal may win only before another worker freezes/dispatched the plan.
     with connection(path) as conn:
-        conn.execute("UPDATE grocery_batches SET status='no_write',response_json=?,updated_at=CURRENT_TIMESTAMP WHERE request_id=? AND payload_hash=? AND status='preflight'",
-                     (canonical(response), request_id, payload_hash))
+        conn.execute("UPDATE grocery_batches SET status='no_write',response_json=?,updated_at=CURRENT_TIMESTAMP WHERE request_id=? AND payload_hash=? AND status=?",
+                     (canonical(response), request_id, payload_hash, expected_status))
     return load_batch(path, request_id, payload_hash)
+
+
+def _ai_preflight(payload: dict, path: Path, body_hash: str, existing: tuple, adapter: GroceryAdapter) -> tuple:
+    """One durable inference claim; retries reuse its interpretation, never re-call AI.
+
+    An interruption between the claim and result is intentionally pending for
+    review. It cannot produce a second interpretation or dispatch any items.
+    """
+    request_id = payload["request_id"]
+    plan = existing[0]
+    if plan.get("phase") == "preflight":
+        try:
+            config = grocery_ai.config_from_environment()
+            if config is None:
+                raise grocery_ai.InterpretationUnavailable("interpreter_not_configured")
+        except grocery_ai.InterpretationUnavailable:
+            return store_no_write(path, request_id, body_hash, no_write(payload,
+                "IA de Mercado no disponible · no cambié nada", "La IA necesita configuración antes de volver a enviar la solicitud completa."))
+        catalog = adapter.catalog()
+        claimed_plan = {"version": AI_PLAN_VERSION, "phase": "interpreting", "catalog": catalog}
+        encoded = canonical(claimed_plan)
+        with connection(path) as conn:
+            claimed = conn.execute("UPDATE grocery_batches SET status='interpreting',plan_json=?,plan_hash=?,updated_at=CURRENT_TIMESTAMP WHERE request_id=? AND payload_hash=? AND status='preflight'",
+                (encoded, sha(encoded), request_id, body_hash)).rowcount
+        if claimed == 1:
+            try:
+                text = str((payload.get("capture") or {}).get("text") or "")
+                proposal = grocery_ai.interpret(text,
+                    catalog, api_key=config.api_key, model=config.model, timeout=config.timeout)
+            except grocery_ai.InterpretationUnavailable:
+                return store_no_write(path, request_id, body_hash, no_write(payload,
+                    "No pude interpretar Mercado · no cambié nada. Intenta la solicitud completa de nuevo.",
+                    "¿Puedes volver a dictar los productos y sus cantidades?"), expected_status="interpreting")
+            interpreted = dict(claimed_plan, phase="interpreted", interpretation=proposal,
+                               mark_missing=grocery_ai.explicit_missing_intent(text))
+            encoded = canonical(interpreted)
+            with connection(path) as conn:
+                conn.execute("UPDATE grocery_batches SET status='interpreted',plan_json=?,plan_hash=?,updated_at=CURRENT_TIMESTAMP WHERE request_id=? AND payload_hash=? AND status='interpreting' AND plan_hash=?",
+                    (encoded, sha(encoded), request_id, body_hash, sha(canonical(claimed_plan))))
+        existing = load_batch(path, request_id, body_hash)
+    if existing is None:
+        raise GroceryPending(request_id, code="grocery_batch_missing")
+    if existing[1] is not None:
+        return existing
+    plan = existing[0]
+    if plan.get("phase") == "interpreting":
+        raise GroceryPending(request_id, code="grocery_interpretation_pending_review")
+    if plan.get("phase") == "interpreted":
+        proposal = plan["interpretation"]
+        if proposal.get("decision") != "apply":
+            question = proposal.get("question") or "¿Puedes dictar los productos y cantidades sin ambigüedad?"
+            return store_no_write(path, request_id, body_hash, no_write(payload,
+                question + " · no cambié nada. Dicta la solicitud completa.",
+                question if proposal.get("decision") == "needs_input" else None), expected_status="interpreted")
+        prepared = adapter.prepare_semantic(proposal["items"], plan["catalog"], mark_missing=plan["mark_missing"])
+        frozen = {"version": AI_PLAN_VERSION, "prepared": prepared, "interpretation": proposal,
+                  "mark_missing": plan["mark_missing"]}
+        encoded = canonical(frozen)
+        adapter.register_operations([(child_operation_id(request_id, item), item) for item in prepared["items"]])
+        with connection(path) as conn:
+            conn.execute("UPDATE grocery_batches SET plan_json=?,plan_hash=?,status='pending',updated_at=CURRENT_TIMESTAMP WHERE request_id=? AND payload_hash=? AND status='interpreted' AND plan_hash=?",
+                (encoded, sha(encoded), request_id, body_hash, sha(canonical(plan))))
+        existing = load_batch(path, request_id, body_hash)
+    return existing
 
 
 def execute(payload: dict, cfg: Any, *, raw_payload_hash: str | None = None, require_existing_batch: bool = False) -> dict:
@@ -195,7 +284,8 @@ def execute(payload: dict, cfg: Any, *, raw_payload_hash: str | None = None, req
             init_db(path)
             existing = load_batch(path, request_id, body_hash)
             if existing is None:
-                marker = canonical({"version": PLAN_VERSION, "phase": "preflight"})
+                version = AI_PLAN_VERSION if os.environ.get("GROCERY_AI_ENABLED") == "1" else PLAN_VERSION
+                marker = canonical({"version": version, "phase": "preflight"})
                 with connection(path) as conn:
                     conn.execute("INSERT OR IGNORE INTO grocery_batches(request_id,payload_hash,plan_json,plan_hash,status) VALUES (?,?,?,?, 'preflight')",
                                  (request_id, body_hash, marker, sha(marker)))
@@ -204,7 +294,7 @@ def execute(payload: dict, cfg: Any, *, raw_payload_hash: str | None = None, req
             raise GroceryPending(request_id, code="grocery_batch_missing")
         if existing[1] is not None:
             return replay_response(*existing)
-        if existing[0].get("phase") == "preflight":
+        if existing[0].get("phase") == "preflight" and existing[0]["version"] == PLAN_VERSION:
             try:
                 items = parse_grocery_items(str((payload.get("capture") or {}).get("text") or ""))
             except GroceryParseError as error:
@@ -215,6 +305,22 @@ def execute(payload: dict, cfg: Any, *, raw_payload_hash: str | None = None, req
         if getattr(cfg, "aura_helper", None) is None:
             raise GroceryPending(request_id, code="grocery_adapter_unavailable")
         adapter = GroceryAdapter(cfg.aura_helper, path)
+        if existing[0]["version"] == AI_PLAN_VERSION and existing[0].get("phase"):
+            try:
+                existing = _ai_preflight(payload, path, body_hash, existing, adapter)
+            except GroceryAdapterError as error:
+                if error.needs_input:
+                    current = load_batch(path, request_id, body_hash)
+                    if current is not None and current[0].get("phase") in {"preflight", "interpreted"}:
+                        existing = store_no_write(path, request_id, body_hash, no_write(payload,
+                            error.message + " · no cambié nada. Dicta la solicitud completa.", error.message),
+                            expected_status=current[0]["phase"])
+                    else:
+                        raise GroceryPending(request_id, code="grocery_preflight_unavailable") from error
+                else:
+                    raise GroceryPending(request_id, code="grocery_preflight_unavailable") from error
+            if existing is not None and existing[1] is not None:
+                return replay_response(*existing)
         if existing is not None and existing[0].get("phase") == "preflight":
             try:
                 prepared = adapter.prepare(items)
