@@ -18,6 +18,7 @@ from urllib import request, error
 import mobile_capture_staging_server as srv
 import reminder_ai as ai
 import reminder_capture as reminders
+from fixtures.grocery_test_support import grocery_environment
 from todoist_reminders import RetryableTodoistError, PermanentTodoistError
 
 NOW = datetime.fromisoformat("2026-10-29T16:00:00-05:00")
@@ -334,12 +335,14 @@ class ReminderCaptureTests(unittest.TestCase):
         self.model.assert_not_called()
 
     def test_slow_ai_does_not_hold_global_lock_and_concurrent_replay_cannot_write_twice(self):
-        endpoint=self.start_server();entered=threading.Event();release=threading.Event()
+        entered=threading.Event();release=threading.Event()
         def slow(*args,**kwargs):
             entered.set();release.wait(4);return proposal()
         self.model.side_effect=slow
         grocery={**payload(request_id="synthetic-grocery"),"route":{"agent":"aura","intent":"grocery","domain":"aura.grocery_capture"},"capture":{"text":"falta leche"}}
-        with mock.patch.object(srv,"run_aura_helper",side_effect=[{"intent":"grocery"},{"intent":"grocery","block_id":"synthetic-block"}]):
+        with tempfile.TemporaryDirectory() as directory, grocery_environment(Path(directory)) as (helper_path, notion):
+            self.cfg=replace(self.cfg,aura_helper=helper_path)
+            endpoint=self.start_server()
             with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
                 first=pool.submit(self.send,endpoint,payload())
                 self.assertTrue(entered.wait(2))
@@ -347,6 +350,7 @@ class ReminderCaptureTests(unittest.TestCase):
                     self.assertEqual(self.send(endpoint,payload())[0],502)
                     result=pool.submit(self.send,endpoint,grocery).result(timeout=2)
                     self.assertTrue(result[1]["write_committed"])
+                    self.assertEqual(len(notion.writes),1)
                 finally: release.set()
                 self.assertTrue(first.result(timeout=4)[1]["write_committed"])
         self.assertEqual(self.model.call_count,1);self.assertEqual(len(self.gateway.remote),1)

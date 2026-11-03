@@ -29,6 +29,7 @@ import unicodedata
 from contextlib import nullcontext
 
 import reminder_capture
+import grocery_capture
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
@@ -1609,67 +1610,11 @@ def execute_grocery_capture(
     payload: dict[str, Any],
     cfg: Config,
     planned: dict[str, Any],
+    *,
+    raw_payload_hash: str | None = None,
+    require_existing_batch: bool = False,
 ) -> dict[str, Any]:
-    # The route is not enough to authorize a side effect. The deterministic
-    # helper must independently classify the dictation as a grocery operation.
-    capture_text = str((payload.get("capture") or {}).get("text") or "").strip()
-    normalized_text = normalize_reminder_command_text(capture_text)
-    if REMINDER_DIRECT_MUTATION_RE.search(normalized_text) or re.search(r"\b(?:comprad[oa]s?|disponibles?|ya\s+(?:tengo|tenemos|compre))\b", normalized_text):
-        planned.update(status="rejected", dry_run=False, write_committed=False, question=None, gates_missing=[], display_message="Solo agrego faltantes de mercado · no cambié nada")
-        planned["plan"].update(would_write=False, side_effects=[], notes="MVP grocery route supports additions only; completion/removal rejected before helper.")
-        return planned
-    preflight = run_aura_helper(payload, cfg, dry_run=True)
-    helper_text = capture_text
-    if preflight.get("intent") in {"task_unscheduled", "note"} and not REMINDER_BARE_TASK_PREFIX_RE.search(capture_text) and not re.search(
-        r"\b(anota|guarda|idea|gasto|pague|pagué|compre|compré|enciende|apaga|puerta|alarma)\b|\d[\d.,]*\s*(mil|cop|pesos)",
-        capture_text.lower(),
-    ):
-        # The dedicated Mercado surface commonly dictates a bare noun such as
-        # "leche". Give the existing Aura helper the missing route context.
-        helper_text = f"falta {capture_text}"
-        preflight = run_aura_helper(payload, cfg, dry_run=True, text_override=helper_text)
-    if preflight.get("intent") not in GROCERY_HELPER_WRITE_INTENTS:
-        planned.update(
-            status="rejected",
-            dry_run=False,
-            write_committed=False,
-            display_message="Solo agrego faltantes de mercado · no cambié nada",
-            question=None,
-            gates_missing=[],
-        )
-        planned["plan"].update(
-            would_write=False,
-            notes="Aura helper preflight did not classify a grocery operation.",
-        )
-        return planned
-
-    committed = run_aura_helper(payload, cfg, dry_run=False, text_override=helper_text)
-    if committed.get("intent") != preflight.get("intent") or committed.get("intent") not in GROCERY_HELPER_WRITE_INTENTS:
-        raise WriteExecutionError("aura_helper_domain_mismatch")
-    if not isinstance(committed.get("block_id"), str) or not committed["block_id"].strip():
-        raise WriteExecutionError("aura_helper_missing_external_id")
-
-    request_id = str(payload.get("request_id") or "")
-    domain = "aura.grocery_capture"
-    item = str(committed.get("item") or committed.get("title") or "artículo")[:160]
-    action = "faltante"
-    return {
-        "status": "committed",
-        "dry_run": False,
-        "write_committed": True,
-        "request_id": request_id,
-        "domain": domain,
-        "display_message": f"Mercado actualizado ✅ · {item} ({action})",
-        "question": None,
-        "duplicate": bool(committed.get("duplicate", False)),
-        "plan": {
-            "side_effects": ["notion.official_grocery_list.write"],
-            "would_write": True,
-            "notes": "Committed by server-allowlisted Aura grocery adapter.",
-        },
-        "external_ids": {"notion_block_id": committed.get("block_id")},
-        "gates_missing": [],
-    }
+    return grocery_capture.execute(payload, cfg, raw_payload_hash=raw_payload_hash, require_existing_batch=require_existing_batch)
 
 
 def watch_safe_text(value: Any, fallback: str, limit: int = 96) -> str:
@@ -1759,7 +1704,7 @@ def ledger_status_for_response(payload: dict[str, Any], response: dict[str, Any]
     return str(response.get("status", "accepted"))
 
 
-def execute_capture(payload: dict[str, Any], cfg: Config) -> dict[str, Any]:
+def execute_capture(payload: dict[str, Any], cfg: Config, *, raw_payload_hash: str | None = None, require_existing_grocery_batch: bool = False) -> dict[str, Any]:
     planned = plan_capture(payload)
     if planned.get("status") == "rejected":
         if client_requests_write(payload):
@@ -1775,7 +1720,7 @@ def execute_capture(payload: dict[str, Any], cfg: Config) -> dict[str, Any]:
         return planned
 
     if route == ("aura", "grocery", "aura.grocery_capture"):
-        return execute_grocery_capture(payload, cfg, planned)
+        return execute_grocery_capture(payload, cfg, planned, raw_payload_hash=raw_payload_hash, require_existing_batch=require_existing_grocery_batch)
     if route == ("aura", "reminder", "aura.reminder_capture"):
         return execute_reminder_capture(payload, cfg, planned)
     if route == ("megan", "expense", "megan.expense_capture"):
@@ -1868,6 +1813,7 @@ class MobileCaptureHandler(BaseHTTPRequestHandler):
         request_id = str(payload.get("request_id"))
         payload_hash = hashlib.sha256(raw).hexdigest()
         domain, _, _ = canonical_domain(payload)
+        grocery_resume = False
         try:
             # Reminder has a durable operation ledger and a per-request OS lock;
             # slow model/network calls never hold the grocery/expense global lock.
@@ -1888,7 +1834,17 @@ class MobileCaptureHandler(BaseHTTPRequestHandler):
                             conn.rollback()
                             json_response(self, HTTPStatus.CONFLICT, {"status": "rejected", "error": "request_id_conflict", "request_id": request_id})
                             return
-                        if old_status not in {LEDGER_WAITING_FOR_SERVER_GATE, "processing"}:
+                        grocery_resume = domain == "aura.grocery_capture" and old_status in {"processing", "grocery_pending"}
+                        if (domain == "aura.grocery_capture" and old_status in {"processing", "grocery_pending"}
+                                and not write_is_authorized(payload, self.cfg)):
+                            conn.rollback()
+                            # Disabling new writes must not turn a partially
+                            # dispatched grocery batch into a dry-run receipt.
+                            pending = grocery_capture.GroceryPending(request_id, code="grocery_server_gate_disabled").response
+                            pending = grocery_capture.preserve_pending_progress(pending, old_response)
+                            json_response(self, HTTPStatus.SERVICE_UNAVAILABLE, pending)
+                            return
+                        if old_status not in {LEDGER_WAITING_FOR_SERVER_GATE, "processing", "grocery_pending"}:
                             cached = json.loads(old_response)
                             cached = correct_legacy_grocery_clarification(payload, cached, old_status)
                             cached = current_cached_expense_preview(conn, cached)
@@ -1909,8 +1865,8 @@ class MobileCaptureHandler(BaseHTTPRequestHandler):
                     ts = now_iso()
                     if replacing_claim:
                         conn.execute(
-                            "UPDATE mobile_capture_ledger SET domain = ?, status = 'processing', response_json = '{}', updated_at = ? WHERE request_id = ?",
-                            (domain, ts, request_id),
+                            "UPDATE mobile_capture_ledger SET domain = ?, status = 'processing', response_json = CASE WHEN ? THEN response_json ELSE '{}' END, updated_at = ? WHERE request_id = ?",
+                            (domain, grocery_resume, ts, request_id),
                         )
                     else:
                         conn.execute(
@@ -1919,7 +1875,7 @@ class MobileCaptureHandler(BaseHTTPRequestHandler):
                         )
                     conn.commit()
 
-                response = response or execute_capture(payload, self.cfg)
+                response = response or execute_capture(payload, self.cfg, raw_payload_hash=payload_hash, require_existing_grocery_batch=grocery_resume)
                 response.setdefault("request_id", request_id)
                 response.setdefault("domain", domain)
                 ts = now_iso()
@@ -1934,6 +1890,30 @@ class MobileCaptureHandler(BaseHTTPRequestHandler):
                     if cursor.rowcount != 1:
                         raise WriteExecutionError("request_claim_missing")
                     conn.commit()
+        except grocery_capture.GroceryConflict:
+            # The batch already owns a different body. Remove only this
+            # conflicting, uncommitted transport claim; retain its batch/items.
+            with sqlite3.connect(self.cfg.ledger_path, timeout=65.0) as conn:
+                conn.execute(
+                    "DELETE FROM mobile_capture_ledger WHERE request_id=? AND payload_hash=? AND status='processing' AND domain='aura.grocery_capture'",
+                    (request_id, payload_hash),
+                )
+                conn.commit()
+            json_response(self, HTTPStatus.CONFLICT, {"status": "rejected", "error": "request_id_conflict", "request_id": request_id})
+            return
+        except grocery_capture.GroceryPending as error:
+            # The frozen batch and item journal are authoritative. Keep the
+            # parent claim so a changed body cannot replace a partial operation.
+            with sqlite3.connect(self.cfg.ledger_path, timeout=65.0) as conn:
+                previous = conn.execute("SELECT response_json FROM mobile_capture_ledger WHERE request_id=? AND payload_hash=?", (request_id, payload_hash)).fetchone()
+                pending = grocery_capture.preserve_pending_progress(error.response, previous[0] if previous else "{}")
+                conn.execute(
+                    "UPDATE mobile_capture_ledger SET status='grocery_pending',response_json=?,updated_at=? WHERE request_id=? AND payload_hash=? AND status IN ('processing','grocery_pending')",
+                    (json.dumps(pending, ensure_ascii=False), now_iso(), request_id, payload_hash),
+                )
+                conn.commit()
+            json_response(self, HTTPStatus.SERVICE_UNAVAILABLE, pending)
+            return
         except WriteExecutionError:
             # A processing request may safely be retried: expense
             # operation ledgers are authoritative across uncertain
@@ -1941,7 +1921,7 @@ class MobileCaptureHandler(BaseHTTPRequestHandler):
             # existing request-id idempotency contracts.
             with sqlite3.connect(self.cfg.ledger_path, timeout=65.0) as conn:
                 conn.execute(
-                    "DELETE FROM mobile_capture_ledger WHERE request_id = ? AND payload_hash = ? AND status = 'processing' AND domain != 'aura.reminder_capture'",
+                    "DELETE FROM mobile_capture_ledger WHERE request_id = ? AND payload_hash = ? AND status = 'processing' AND domain NOT IN ('aura.reminder_capture','aura.grocery_capture')",
                     (request_id, payload_hash),
                 )
                 conn.commit()

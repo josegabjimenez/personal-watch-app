@@ -18,6 +18,8 @@ from unittest import mock
 from urllib.parse import urlsplit
 
 import mobile_capture_staging_server as srv
+import grocery_capture
+from fixtures.grocery_test_support import grocery_environment
 import test_mobile_capture_staging_server as server_fixture
 import test_mobile_expense_capture as expense_fixture
 
@@ -269,31 +271,44 @@ class PersonalMVPRegressionTests(unittest.TestCase):
 
     def test_grocery_route_does_not_turn_a_bare_task_into_an_item(self):
         payload = self.fixture.grocery_payload(live=True, text="llamar a mamá mañana")
-        with mock.patch.object(srv, "run_aura_helper", return_value={"ok": True, "intent": "task_unscheduled"}) as helper:
+        with mock.patch.object(srv, "run_aura_helper") as helper:
             response = srv.execute_capture(payload, self.cfg)
         self.assertFalse(response["write_committed"])
-        self.assertEqual(helper.call_count, 1)
-        self.assertTrue(helper.call_args.kwargs["dry_run"])
+        helper.assert_not_called()
 
     def test_grocery_duplicate_requires_the_canonical_external_id(self):
         payload = self.fixture.grocery_payload(live=True, text="falta leche")
-        with mock.patch.object(srv, "run_aura_helper", side_effect=[{"ok": True, "intent": "grocery"}, {"ok": True, "intent": "grocery", "duplicate": True}]):
-            with self.assertRaisesRegex(srv.WriteExecutionError, "missing_external_id"):
-                srv.execute_capture(payload, self.cfg)
+        with grocery_environment(Path(self.directory.name)) as (helper_path, notion):
+            original_open = notion.open
+            def missing_ack(req, timeout):
+                result = original_open(req, timeout)
+                if req.get_method() == "PATCH":
+                    result.value = {"object": "list", "results": [{}]}
+                return result
+            cfg = replace(self.cfg, aura_helper=helper_path)
+            with mock.patch.object(notion, "open", side_effect=missing_ack):
+                with self.assertRaises(grocery_capture.GroceryPending):
+                    srv.execute_capture(payload, cfg)
+                with self.assertRaises(grocery_capture.GroceryPending):
+                    srv.execute_capture(payload, cfg)
+            self.assertEqual(len(notion.writes), 1)
 
     def test_grocery_mvp_cannot_complete_or_remove_existing_items(self):
-        for text in ("marca leche como comprada", "quita leche", "ya compré leche"):
-            with self.subTest(text=text):
-                with mock.patch.object(srv, "run_aura_helper") as helper:
-                    response = srv.execute_capture(self.fixture.grocery_payload(live=True, text=text), self.cfg)
+        for index, text in enumerate(("marca leche como comprada", "quita leche", "ya compré leche")):
+            with self.subTest(text=text), mock.patch.object(srv, "run_aura_helper") as helper:
+                payload = self.fixture.grocery_payload(live=True, text=text)
+                payload["request_id"] += f"-refusal-{index}"
+                response = srv.execute_capture(payload, self.cfg)
                 self.assertEqual(response["status"], "rejected")
                 self.assertFalse(response["write_committed"])
                 helper.assert_not_called()
-        with mock.patch.object(srv, "run_aura_helper", return_value={"ok": True, "intent": "grocery_done"}) as helper:
-            response = srv.execute_capture(self.fixture.grocery_payload(live=True, text="leche"), self.cfg)
-        self.assertEqual(response["status"], "rejected")
-        self.assertEqual(helper.call_count, 1)
-        self.assertTrue(helper.call_args.kwargs["dry_run"])
+        with grocery_environment(Path(self.directory.name)) as (helper_path, notion):
+            with mock.patch.object(srv, "run_aura_helper", side_effect=AssertionError("generic helper routing forbidden")):
+                payload = self.fixture.grocery_payload(live=True, text="leche")
+                payload["request_id"] += "-valid-addition"
+                response = srv.execute_capture(payload, replace(self.cfg, aura_helper=helper_path))
+            self.assertEqual(response["status"], "committed")
+            self.assertTrue(all(entry[2]["children"][0]["to_do"]["checked"] is False for entry in notion.writes))
 
     def test_explicit_foreign_currency_never_becomes_a_cop_preview(self):
         expense = expense_fixture.expense

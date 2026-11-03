@@ -18,6 +18,7 @@ from urllib import error, request
 from zoneinfo import ZoneInfo
 
 import mobile_capture_staging_server as srv
+from fixtures.grocery_test_support import grocery_environment
 
 
 class MobileCaptureStagingServerTests(unittest.TestCase):
@@ -1337,24 +1338,18 @@ class MobileCaptureStagingServerTests(unittest.TestCase):
 
     def test_bare_grocery_item_commits_through_allowlisted_adapter(self):
         payload = self.grocery_payload(live=True, text="leche")
-        cfg = self.write_config("aura.grocery_capture")
-        helper_results = [
-            {"ok": True, "intent": "note", "title": "Leche"},
-            {"ok": True, "intent": "grocery", "title": "Leche"},
-            {"ok": True, "intent": "grocery", "item": "leche", "block_id": "notion-block"},
-        ]
-        with mock.patch.object(srv, "run_aura_helper", side_effect=helper_results) as helper:
-            response = srv.execute_capture(payload, cfg)
-
+        with tempfile.TemporaryDirectory() as directory, grocery_environment(Path(directory)) as (helper_path, notion):
+            cfg = self.write_config("aura.grocery_capture", ledger_path=Path(directory) / "ledger.sqlite")
+            cfg = replace(cfg, aura_helper=helper_path)
+            with mock.patch.object(srv, "run_aura_helper", side_effect=AssertionError("generic helper routing forbidden")):
+                response = srv.execute_capture(payload, cfg)
         self.assertEqual(response["status"], "committed")
         self.assertFalse(response["dry_run"])
         self.assertTrue(response["write_committed"])
         self.assertTrue(response["plan"]["would_write"])
         self.assertEqual(response["request_id"], payload["request_id"])
-        self.assertEqual(response["external_ids"]["notion_block_id"], "notion-block")
-        self.assertEqual(helper.call_count, 3)
-        self.assertEqual(helper.call_args_list[1].kwargs["text_override"], "falta leche")
-        self.assertEqual(helper.call_args_list[2].kwargs["text_override"], "falta leche")
+        self.assertEqual(response["external_ids"]["notion_block_ids"], ["synthetic-created-1"])
+        self.assertEqual(len(notion.writes), 1)
 
     def test_grocery_route_mismatch_does_not_execute_write(self):
         payload = self.grocery_payload(live=True, text="recuérdame llamar mañana")
@@ -1371,7 +1366,7 @@ class MobileCaptureStagingServerTests(unittest.TestCase):
         self.assertFalse(response["write_committed"])
         self.assertFalse(response["plan"]["would_write"])
         self.assertEqual(response["gates_missing"], [])
-        self.assertEqual(helper.call_count, 1)
+        helper.assert_not_called()
 
     def test_reminder_missing_server_credentials_stays_dry_run_without_fallback(self):
         payload = self.reminder_payload(live=True)
@@ -1660,9 +1655,9 @@ class MobileCaptureStagingServerTests(unittest.TestCase):
         raw = json.dumps(payload, separators=(",", ":")).encode("utf-8")
         original_execute = srv.execute_capture
 
-        def slow_execute(value, cfg):
+        def slow_execute(value, cfg, **kwargs):
             time.sleep(0.05)
-            return original_execute(value, cfg)
+            return original_execute(value, cfg, **kwargs)
 
         class QuietHandler(srv.MobileCaptureHandler):
             def log_message(self, fmt, *args):
