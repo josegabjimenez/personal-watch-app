@@ -31,8 +31,12 @@ def safe_result(value):
     if not isinstance(value, dict):
         raise ValueError("invalid_receiver_result")
     result = {}
-    for key in ("status", "code", "revision", "release_id", "current", "active", "previous", "recovery_required", "retention_pending"):
+    for key in ("status", "code", "revision", "release_id", "current", "active", "previous", "recovery_required", "retention_pending", "inhibited", "state_compatibility"):
         item = value.get(key)
+        if key == "state_compatibility":
+            if key in value and item in (None, "grocery-batch-v1"):
+                result[key] = item
+            continue
         if item is None or isinstance(item, bool):
             if key in value:
                 result[key] = item

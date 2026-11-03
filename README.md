@@ -92,10 +92,10 @@ docs/
 
 ## Backend updates
 
-[Manual backend updates](docs/BACKEND_UPDATES.md) provides synthetic GitHub checks,
-an explicitly triggered release, health verification and rollback on the existing
-VPS. Activation and the first production release require the documented handoff;
-this mechanism does not deploy on push or merge.
+[Manual backend updates](docs/BACKEND_UPDATES.md) reproduces the exact sealed
+four-file grocery package, checks it synthetically, and supports an explicitly
+triggered atomic activation with batch-compatible recovery on the existing VPS.
+Activation requires the documented handoff; push and merge cannot deploy.
 
 ## Local development
 

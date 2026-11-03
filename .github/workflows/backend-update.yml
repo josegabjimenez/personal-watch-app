@@ -12,8 +12,9 @@ on:
         default: status
         required: true
       revision:
-        description: Deploy only — full reviewed commit SHA already merged into main
+        description: Deploy only — exact grocery package SHA pinned by the reviewed automation profile
         type: string
+        default: 1fe67948051f1d25140e13900d51275c498e0770
       expected_current:
         description: Deploy/rollback — current fingerprint from a fresh status run
         type: string
@@ -53,7 +54,8 @@ jobs:
           CONFIRMATION: ${{ inputs.confirmation }}
         run: |
           python3 - <<'PY'
-          import os, re, subprocess
+          import json, os, re, subprocess
+          from pathlib import Path
           action, revision, release_id = (os.environ[k] for k in ('ACTION', 'REVISION', 'RELEASE_ID'))
           assert action in ('status', 'deploy', 'rollback', 'recover'), 'invalid action'
           suffix = revision if action == 'deploy' else release_id if action == 'rollback' else ''
@@ -63,23 +65,22 @@ jobs:
           if action == 'rollback':
               assert re.fullmatch('[0-9a-f]{64}', release_id), 'release ID required'
           if action == 'deploy':
-              assert re.fullmatch('[0-9a-f]{40}', revision), 'full SHA required'
-              subprocess.run(['git', 'merge-base', '--is-ancestor', revision, os.environ['GITHUB_SHA']], check=True)
-              subprocess.run(['git', 'worktree', 'add', '--detach', os.environ['RUNNER_TEMP'] + '/candidate', revision], check=True)
+              profile = json.loads(Path('ops/deploy/grocery-package.json').read_bytes())
+              assert revision == profile['package_revision'], 'exact sealed package SHA required'
+              subprocess.run(['git', 'fetch', '--no-tags', '--depth=1', 'origin', revision], check=True)
           PY
-      - name: Recheck exact candidate with synthetic fixtures, without production credentials
+      - name: Recheck reviewed automation with synthetic fixtures, without production credentials
         if: inputs.action == 'deploy'
-        working-directory: ${{ runner.temp }}/candidate
         run: |
           PYTHONPATH=backend python3 -m unittest discover -s backend/tests -p 'test_*.py'
           python3 -m unittest discover -s ops/deploy/tests -p 'test_*.py'
-      - name: Build reproducible code-only bundle
+      - name: Reproduce sealed four-file package and test its actual historical runtime
         id: bundle
         if: inputs.action == 'deploy'
         env:
           REVISION: ${{ inputs.revision }}
         run: |
-          python3 ops/deploy/build_bundle.py --revision "$REVISION" --output "$RUNNER_TEMP/release.json"
+          python3 ops/deploy/build_bundle.py --revision "$REVISION" --verify-tests --output "$RUNNER_TEMP/release.json"
           python3 - <<'PY'
           import hashlib, os
           from pathlib import Path

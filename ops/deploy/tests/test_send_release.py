@@ -108,6 +108,16 @@ class SendReleaseTests(unittest.TestCase):
         self.assertNotIn("/private/file", encoded)
         self.assertNotIn(self.key, encoded)
 
+    def test_inhibitor_recovery_and_exact_batch_compatibility_flags_survive(self):
+        value = {"status": "ok", "current": "a" * 64, "inhibited": True,
+                 "recovery_required": True, "retention_pending": False,
+                 "state_compatibility": "grocery-batch-v1"}
+        self.assertEqual(self.module.safe_result(value), value)
+        for state in ("legacy-single-item", "grocery-batch-v2", "/private/state", True, 1):
+            with self.subTest(state=state):
+                result = self.module.safe_result({"status": "ok", "state_compatibility": state})
+                self.assertNotIn("state_compatibility", result)
+
     def test_timeout_is_never_retried_and_cleans_up_key(self):
         observed = {}
         def timed_out(command, **kwargs):

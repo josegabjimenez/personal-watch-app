@@ -1,14 +1,17 @@
-"""Offline release provenance tests; no working-tree secrets or network access."""
+"""Offline checks for the sealed four-artifact package builder."""
 
 import base64
-import hashlib
+import copy
 import importlib.util
 import json
+import os
 from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
+from sealed_fixture import FILENAMES, INPUT_PATHS, digest, fixture
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "build_bundle.py"
 
@@ -24,119 +27,138 @@ class BuildBundleTests(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
-        self.repo = Path(self.directory.name)
+        self.repo = Path(self.directory.name).resolve()
         self.git("init", "--quiet")
         self.git("config", "user.name", "Synthetic Tests")
         self.git("config", "user.email", "synthetic@example.invalid")
-        self.write("backend/mobile_capture_staging_server.py", "VALUE = 'reviewed'\n")
-        self.write("ops/deploy/release-files.json", json.dumps({"bff": "backend/mobile_capture_staging_server.py"}))
-        self.git("add", ".")
-        self.git("commit", "--quiet", "-m", "Synthetic release")
-        self.revision = self.git("rev-parse", "HEAD").strip()
+        self.artifacts, self.manifest, self.raw_manifest, self.profile, self.bundle = fixture()
+        for path in INPUT_PATHS:
+            self.write(path, b"# synthetic input\n")
+        for name in FILENAMES[1:]:
+            self.write("backend/" + name, self.artifacts[name])
+        self.write(self.profile["manifest_path"], self.raw_manifest)
+        self.write("ops/hotfixes/grocery-multi-item/build_release.py", self.packager())
+        self.write("backend/mobile_capture_staging_server.py", b"raise RuntimeError('paused-unrelated-mvp')\n")
+        self.write(".env", b"TOKEN=synthetic-private-sentinel\n")
+        self.commit()
         self.builder = load_builder()
 
     def git(self, *args):
-        return subprocess.run(
-            ["git", "-C", str(self.repo), *args], check=True,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-        ).stdout
+        return subprocess.run(["git", "-C", str(self.repo), *args], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True).stdout
 
-    def write(self, name, text):
+    def write(self, name, data):
         path = self.repo / name
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(text)
+        path.write_bytes(data if isinstance(data, bytes) else data.encode())
         return path
 
-    def commit_mapping(self, mapping):
-        self.write("ops/deploy/release-files.json", json.dumps(mapping))
+    def commit(self):
         self.git("add", ".")
-        self.git("commit", "--quiet", "-m", "Synthetic change")
-        return self.git("rev-parse", "HEAD").strip()
+        self.git("commit", "--quiet", "-m", "Synthetic sealed package")
+        self.revision = self.git("rev-parse", "HEAD").strip()
+        self.profile["package_revision"] = self.revision
+        self.profile["inputs"] = {name: digest((self.repo / name).read_bytes()) for name in INPUT_PATHS}
 
-    def build(self, revision=None):
-        return self.builder.build_bundle(self.repo, revision or self.revision)
+    def packager(self, alteration=""):
+        encoded = {name: base64.b64encode(content).decode() for name, content in self.artifacts.items()}
+        return ("import argparse,base64,json,os\nfrom pathlib import Path\n"
+                "p=argparse.ArgumentParser();p.add_argument('--repo');p.add_argument('--output',required=True);a=p.parse_args()\n"
+                "assert 'SYNTHETIC_PRIVATE_TOKEN' not in os.environ\n"
+                "out=Path(a.output);out.mkdir(parents=True,exist_ok=True)\n"
+                "files=" + repr(encoded) + "\n"
+                "for name,data in files.items(): (out/name).write_bytes(base64.b64decode(data))\n"
+                "(out/'manifest.json').write_bytes(base64.b64decode(" + repr(base64.b64encode(self.raw_manifest).decode()) + "))\n" + alteration).encode()
 
-    def assert_rejected(self, revision=None):
-        with self.assertRaises(Exception):
-            self.build(revision)
+    def build(self, revision=None, profile=None):
+        return self.builder.build_bundle(self.repo, revision or self.revision, profile=profile or self.profile)
 
-    def test_uses_exact_committed_bytes_and_excludes_worktree_secrets(self):
-        self.write("backend/mobile_capture_staging_server.py", "VALUE = 'dirty'\n")
-        self.write("backend/local-secret.py", "TOKEN = 'do-not-package'\n")
-        self.write(".env", "TOKEN=private-test-sentinel\n")
-        bundle = self.build()
-        expected = b"VALUE = 'reviewed'\n"
-        self.assertEqual(bundle["schema"], 1)
+    def rejected(self, **kwargs):
+        with self.assertRaises((ValueError, OSError, SyntaxError, subprocess.SubprocessError)):
+            self.build(**kwargs)
+
+    def test_builds_exact_sealed_artifacts_and_never_the_standalone_mvp(self):
+        with mock.patch.dict(os.environ, {"SYNTHETIC_PRIVATE_TOKEN": "private-test-value"}):
+            bundle = self.build()
+        self.assertEqual(bundle["schema"], 2)
         self.assertEqual(bundle["revision"], self.revision)
-        self.assertEqual(set(bundle["files"]), {"bff"})
-        entry = bundle["files"]["bff"]
-        self.assertEqual(base64.b64decode(entry["content_b64"], validate=True), expected)
-        self.assertEqual(entry["sha256"], hashlib.sha256(expected).hexdigest())
-        encoded = json.dumps(bundle)
-        self.assertNotIn("private-test-sentinel", encoded)
-        self.assertNotIn("do-not-package", encoded)
-        self.assertNotIn("dirty", encoded)
+        self.assertEqual(base64.b64decode(bundle["manifest_b64"], validate=True), self.raw_manifest)
+        self.assertEqual(set(bundle["files"]), set(FILENAMES))
+        for name, expected in self.artifacts.items():
+            self.assertEqual(base64.b64decode(bundle["files"][name]["content_b64"], validate=True), expected)
+            self.assertEqual(bundle["files"][name]["sha256"], self.manifest["artifacts"][name])
+        text = json.dumps(bundle)
+        self.assertNotIn("private-test-value", text)
+        self.assertNotIn("synthetic-private-sentinel", text)
+        self.assertNotIn("paused-unrelated-mvp", text)
 
-    def test_bundle_is_reproducible_even_after_newer_commit(self):
-        first = self.build()
-        self.write("backend/mobile_capture_staging_server.py", "VALUE = 'newer'\n")
-        self.git("add", ".")
-        self.git("commit", "--quiet", "-m", "Newer synthetic release")
-        self.assertEqual(self.build(), first)
+    def test_dirty_or_untracked_inputs_cannot_change_the_pinned_release(self):
+        expected = self.build()
+        self.write("backend/grocery_capture.py", b"VALUE='unreviewed-dirty'\n")
+        self.write("ops/hotfixes/grocery-multi-item/build_release.py", b"raise RuntimeError('dirty')\n")
+        self.write("backend/untracked-private.py", b"TOKEN='untracked-sentinel'\n")
+        self.assertEqual(self.build(), expected)
 
-    def test_ref_names_and_abbreviated_revision_are_rejected(self):
-        for ref in ("HEAD", "main", self.revision[:12], self.revision.upper(), "../HEAD", "-h"):
-            with self.subTest(ref=ref):
-                self.assert_rejected(ref)
+    def test_revision_must_be_exactly_the_trusted_package_commit(self):
+        for revision in ("HEAD", self.revision[:12], "0" * 40, self.revision.upper(), "-h"):
+            with self.subTest(revision=revision):
+                self.rejected(revision=revision)
+        self.write("unrelated.txt", b"newer commit\n")
+        previous = self.revision
+        profile = copy.deepcopy(self.profile)
+        self.commit()
+        self.rejected(profile=profile)
+        self.assertEqual(self.build(previous, profile)["revision"], previous)
 
-    def test_optional_reviewed_helper_is_included(self):
-        self.write("runtime/apple_watch_capture.py", "HELPER = True\n")
-        revision = self.commit_mapping({
-            "bff": "backend/mobile_capture_staging_server.py",
-            "aura_helper": "runtime/apple_watch_capture.py",
-        })
-        self.assertEqual(set(self.build(revision)["files"]), {"bff", "aura_helper"})
+    def test_trusted_input_hashes_detect_changed_pinned_source(self):
+        profile = copy.deepcopy(self.profile)
+        self.write("backend/grocery_capture.py", b"VALUE='changed-after-review'\n")
+        self.commit()
+        profile["package_revision"] = self.revision
+        self.rejected(profile=profile)
 
-    def test_unknown_slot_and_missing_bff_are_rejected(self):
-        for mapping in ({"secret": "backend/mobile_capture_staging_server.py"}, {"aura_helper": "backend/mobile_capture_staging_server.py"}):
-            with self.subTest(mapping=mapping):
-                revision = self.commit_mapping(mapping)
-                self.assert_rejected(revision)
+    def test_input_path_set_cannot_include_secrets_or_omit_a_dependency(self):
+        for mutate in (lambda p: p["inputs"].update({".env": digest((self.repo / ".env").read_bytes())}), lambda p: p["inputs"].pop(INPUT_PATHS[0])):
+            profile = copy.deepcopy(self.profile)
+            mutate(profile)
+            self.rejected(profile=profile)
 
-    def test_non_python_source_is_rejected(self):
-        self.write("backend/settings.env", "TOKEN=synthetic\n")
-        revision = self.commit_mapping({"bff": "backend/settings.env"})
-        self.assert_rejected(revision)
+    def test_source_manifest_requires_exact_raw_and_decoded_seal_agreement(self):
+        self.write(self.profile["manifest_path"], self.raw_manifest + b"\n")
+        self.commit()
+        self.rejected()
+        changed = copy.deepcopy(self.manifest)
+        changed["artifacts"][FILENAMES[0]] = "0" * 64
+        self.write(self.profile["manifest_path"], json.dumps(changed, sort_keys=True, indent=2) + "\n")
+        self.commit()
+        self.rejected()
 
-    def test_source_symlink_is_rejected_without_reading_target(self):
-        target = self.repo / "backend/mobile_capture_staging_server.py"
-        target.unlink()
-        target.symlink_to("../private.py")
-        self.write("private.py", "SECRET = 'synthetic-secret'\n")
-        self.git("add", ".")
-        self.git("commit", "--quiet", "-m", "Synthetic symlink")
-        self.assert_rejected(self.git("rev-parse", "HEAD").strip())
-
-    def test_mapping_cannot_escape_committed_tree(self):
-        for path in ("../private.py", "/tmp/private.py", "backend/../private.py", "backend/.env"):
+    def test_symlinked_packager_or_runtime_input_is_rejected(self):
+        for path in (INPUT_PATHS[0], "backend/grocery_capture.py"):
             with self.subTest(path=path):
-                revision = self.commit_mapping({"bff": path})
-                self.assert_rejected(revision)
+                source = self.repo / path
+                original = source.read_bytes()
+                source.unlink()
+                self.write("synthetic-target.py", original)
+                source.symlink_to(self.repo / "synthetic-target.py")
+                self.commit()
+                self.rejected()
+                source.unlink()
+                source.write_bytes(original)
+                self.commit()
 
-    def test_invalid_or_oversized_python_is_not_a_release(self):
-        for source in ("def broken(:\n", "#" + "x" * 400_000):
-            with self.subTest(size=len(source)):
-                self.write("backend/mobile_capture_staging_server.py", source)
-                self.git("add", ".")
-                self.git("commit", "--quiet", "-m", "Invalid synthetic source")
-                self.assert_rejected(self.git("rev-parse", "HEAD").strip())
-
-    def test_two_slots_cannot_alias_the_same_source(self):
-        revision = self.commit_mapping({
-            "bff": "backend/mobile_capture_staging_server.py",
-            "aura_helper": "backend/mobile_capture_staging_server.py",
-        })
-        self.assert_rejected(revision)
+    def test_packager_output_rejects_extra_missing_changed_or_symlinked_artifacts(self):
+        alterations = (
+            "(out/'extra.py').write_text('extra')\n",
+            "(out/'grocery_capture.py').unlink()\n",
+            "(out/'grocery_capture.py').write_text('VALUE=999')\n",
+            "(out/'grocery_capture.py').unlink();(out/'grocery_capture.py').symlink_to(out/'grocery_item_parser.py')\n",
+            "(out/'manifest.json').write_text('{}')\n",
+        )
+        for alteration in alterations:
+            with self.subTest(alteration=alteration):
+                self.write(INPUT_PATHS[0], self.packager(alteration))
+                self.commit()
+                self.rejected()
 
 
 if __name__ == "__main__":

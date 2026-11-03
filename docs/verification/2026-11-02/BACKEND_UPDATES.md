@@ -2,6 +2,10 @@
 
 Date: November 2, 2026, America/Bogota.
 
+This records the initial `6f5fc65` delivery. Its single-file design was superseded
+by the [sealed grocery package integration](BACKEND_GROCERY_PACKAGE.md), which is
+the current PR #2 acceptance evidence and activation boundary.
+
 ## Scope and provenance
 
 - Independent branch: `codex/backend-update-automation`.

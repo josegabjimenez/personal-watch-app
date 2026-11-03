@@ -20,8 +20,13 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          fetch-depth: 0
           persist-credentials: false
       - name: Synthetic backend regression
         run: PYTHONPATH=backend python3 -m unittest discover -s backend/tests -p 'test_*.py'
       - name: Release failure, rollback and concurrency regression
         run: python3 -m unittest discover -s ops/deploy/tests -p 'test_*.py'
+      - name: Exact sealed historical grocery package and its offline regression
+        run: |
+          git fetch --no-tags --depth=1 origin 1fe67948051f1d25140e13900d51275c498e0770
+          python3 ops/deploy/build_bundle.py --revision 1fe67948051f1d25140e13900d51275c498e0770 --verify-tests --output "$RUNNER_TEMP/sealed-grocery-review.json"
