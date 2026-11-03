@@ -8,7 +8,9 @@ from __future__ import annotations
 import copy
 import fcntl
 import hashlib
+import io
 import json
+import os
 from pathlib import Path
 import shutil
 import sqlite3
@@ -107,6 +109,30 @@ class FakeController:
         self.active, self.pid = True, 100 + self.events.count('start')
 
 
+class TransientStartController(FakeController):
+    """Simulate systemd Type=simple before its launcher execs Python."""
+    def __init__(self, *args):
+        super().__init__(*args)
+        self.startup_snapshots = 0
+        self.transients_seen = 0
+
+    def start(self):
+        super().start()
+        self.startup_snapshots = 2
+
+    def snapshot(self):
+        snapshot = super().snapshot()
+        if snapshot.active and self.startup_snapshots:
+            remaining = self.startup_snapshots
+            self.startup_snapshots -= 1
+            self.transients_seen += 1
+            if remaining == 2:
+                return install.ServiceSnapshot(False, 0, (), self.working_directory)
+            return install.ServiceSnapshot(True, self.pid, ('/bin/sh', '-c', 'synthetic launch wrapper'),
+                                           self.working_directory / 'temporary-wrapper-directory')
+        return snapshot
+
+
 class InstallReleaseTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -176,8 +202,43 @@ class InstallReleaseTests(unittest.TestCase):
         return result
 
     def installer(self, **kwargs):
-        return install.Installer(self.paths, self.controller, self.health,
-                                 helper_sha256=digest(self.helper), lock_timeout=0.05, drain_timeout=0.05, **kwargs)
+        options = dict(helper_sha256=digest(self.helper), lock_timeout=0.05,
+                       drain_timeout=0.05, startup_timeout=0.05)
+        options.update(kwargs)
+        return install.Installer(self.paths, self.controller, self.health, **options)
+
+    def prepare_verified_backup(self):
+        self.new_health_bad = True
+        report = self.installer().apply()
+        self.assertEqual(report['status'], 'rolled_back')
+        self.assert_old_runtime()
+        self.assertTrue(self.controller.active)
+        self.assertEqual(sorted(member.name for member in self.backup.iterdir()),
+                         ['backup.json', 'mobile-ledger.sqlite3', 'previous-mobile_capture_staging_server.py'])
+        self.new_health_bad = False
+        self.controller.events.clear()
+        self.controller.reservation_seen_at_stop.clear()
+        return self.backup_snapshot()
+
+    def backup_snapshot(self):
+        folder = self.backup.lstat()
+        return {
+            'directory': (folder.st_dev, folder.st_ino, folder.st_uid, folder.st_gid, folder.st_mode & 0o777),
+            'members': {
+                member.name: (member.read_bytes(), member.stat().st_dev, member.stat().st_ino,
+                              member.stat().st_nlink, member.stat().st_uid, member.stat().st_gid,
+                              member.stat().st_mode & 0o777)
+                for member in self.backup.iterdir()
+            },
+        }
+
+    def assert_resume_blocked(self, code='resume_backup_invalid'):
+        with self.assertRaises(install.InstallError) as caught:
+            self.installer(resume_verified_backup=True).apply()
+        self.assertEqual(caught.exception.code, code)
+        self.assertEqual(self.controller.events, [])
+        self.assertTrue(self.controller.active)
+        self.assert_old_runtime()
 
     def assert_old_runtime(self):
         self.assertEqual(self.entrypoint.read_bytes(), self.baseline)
@@ -202,6 +263,296 @@ class InstallReleaseTests(unittest.TestCase):
         self.assertFalse(self.backup_root.exists())
         self.assertFalse(self.lock_file.exists())
         self.assert_private_report(report)
+
+    def test_transient_launch_wrapper_is_waited_for_before_new_runtime_verification(self):
+        self.controller = TransientStartController(self.entrypoint, self.ledger, self.helper, self.case)
+        report = self.installer(startup_timeout=0.3).apply()
+        self.assertEqual(report['status'], 'installed')
+        self.assertEqual(self.controller.transients_seen, 2)
+        self.assertTrue(self.controller.active)
+        self.assert_new_runtime()
+        self.assertEqual(self.ledger.read_bytes(), self.original_ledger)
+
+    def test_transient_launch_wrapper_is_also_waited_for_during_legacy_recovery(self):
+        self.controller = TransientStartController(self.entrypoint, self.ledger, self.helper, self.case)
+        self.new_health_bad = True
+        report = self.installer(startup_timeout=0.3).apply()
+        self.assertEqual((report['status'], report['code']), ('rolled_back', 'health_mismatch'))
+        self.assertEqual(self.controller.transients_seen, 4)
+        self.assertTrue(self.controller.active)
+        self.assert_old_runtime()
+        self.assertEqual(self.ledger.read_bytes(), self.original_ledger)
+
+    def test_persistent_post_start_argument_mismatch_fails_with_bounded_readiness_wait(self):
+        original_snapshot = self.controller.snapshot
+        def mismatched_new_runtime():
+            snapshot = original_snapshot()
+            if snapshot.active and digest(self.entrypoint) != install.BASELINE_SHA256:
+                return install.ServiceSnapshot(True, snapshot.pid, snapshot.argv + ('--synthetic-unexpected', 'value'),
+                                               snapshot.working_directory)
+            return snapshot
+        self.controller.snapshot = mismatched_new_runtime
+        started = time.monotonic()
+        report = self.installer(startup_timeout=0.05).apply()
+        self.assertLess(time.monotonic() - started, 1.5)
+        self.assertEqual(report['status'], 'rolled_back')
+        self.assertIn(report['code'], {'service_arguments', 'service_changed'})
+        self.assertTrue(self.controller.active)
+        self.assert_old_runtime()
+
+    def test_persistent_post_start_working_directory_mismatch_is_not_hidden_by_healthy_reply(self):
+        original_snapshot = self.controller.snapshot
+        def mismatched_new_runtime():
+            snapshot = original_snapshot()
+            if snapshot.active and digest(self.entrypoint) != install.BASELINE_SHA256:
+                return install.ServiceSnapshot(True, snapshot.pid, snapshot.argv, self.case / 'wrong-working-directory')
+            return snapshot
+        self.controller.snapshot = mismatched_new_runtime
+        started = time.monotonic()
+        report = self.installer(startup_timeout=0.05).apply()
+        self.assertLess(time.monotonic() - started, 1.5)
+        self.assertEqual((report['status'], report['code']), ('rolled_back', 'service_changed'))
+        self.assertTrue(self.controller.active)
+        self.assert_old_runtime()
+
+    def test_existing_verified_backup_stays_blocked_by_default_but_explicit_preflight_is_read_only(self):
+        backup = self.prepare_verified_backup()
+        for operation in ('preflight', 'apply'):
+            with self.subTest(operation=operation):
+                with self.assertRaises(install.InstallError) as caught:
+                    getattr(self.installer(), operation)()
+                self.assertEqual(caught.exception.code, 'backup_exists')
+        before = file_snapshot(self.case)
+        report = self.installer(resume_verified_backup=True).preflight()
+        self.assertEqual(report['status'], 'preflight_ok')
+        self.assertIs(report['backup_reused'], True)
+        self.assertEqual(file_snapshot(self.case), before)
+        self.assertEqual(self.backup_snapshot(), backup)
+        self.assertEqual(self.controller.events, [])
+        self.assert_private_report(report)
+
+    def test_explicit_resume_reuses_identical_backup_without_backup_or_data_restore(self):
+        backup = self.prepare_verified_backup()
+        current = self.ledger.read_bytes()
+        installer = self.installer(resume_verified_backup=True)
+        with mock.patch.object(installer, '_backup', side_effect=AssertionError('resume must not create another backup')):
+            report = installer.apply()
+        self.assertEqual(report['status'], 'installed')
+        self.assertIs(report['backup_reused'], True)
+        self.assertEqual(self.backup_snapshot(), backup)
+        self.assertEqual(self.ledger.read_bytes(), current)
+        self.assertEqual(len([entry for entry in self.backup_root.iterdir() if entry.is_dir()]), 1)
+        self.assert_new_runtime()
+        self.assertTrue(self.controller.active)
+        self.assert_private_report(report)
+
+    def test_explicit_resume_without_existing_backup_never_creates_one(self):
+        self.assert_resume_blocked()
+        self.assertFalse(self.backup.exists())
+        self.assertEqual(self.ledger.read_bytes(), self.original_ledger)
+
+    def test_resume_rejects_missing_and_extra_backup_members_before_stop(self):
+        self.prepare_verified_backup()
+        marker = self.backup / 'backup.json'
+        raw = marker.read_bytes()
+        marker.unlink()
+        self.assert_resume_blocked()
+        marker.write_bytes(raw); marker.chmod(0o600)
+        extra = self.backup / 'unexpected-member'
+        extra.write_text('synthetic unrelated file')
+        self.assert_resume_blocked()
+        self.assertEqual(extra.read_text(), 'synthetic unrelated file')
+        self.assertEqual(self.ledger.read_bytes(), self.original_ledger)
+
+    def test_resume_rejects_nonprivate_backup_directory_members_and_wrong_executor_owner(self):
+        self.prepare_verified_backup()
+        self.backup.chmod(0o755)
+        self.assert_resume_blocked()
+        self.backup.chmod(0o700)
+        for name in ('backup.json', 'mobile-ledger.sqlite3', 'previous-mobile_capture_staging_server.py'):
+            member = self.backup / name
+            original = member.stat().st_mode & 0o777
+            member.chmod(0o600 if original != 0o600 else 0o640)
+            with self.subTest(member=name):
+                self.assert_resume_blocked()
+            member.chmod(original)
+        with mock.patch.object(install.os, 'geteuid', return_value=os.geteuid() + 1):
+            self.assert_resume_blocked()
+
+    def test_resume_rejects_symlinked_backup_directory_without_rewriting_it(self):
+        self.prepare_verified_backup()
+        target = self.backup.with_name('synthetic-symlink-target')
+        self.backup.rename(target)
+        self.backup.symlink_to(target, target_is_directory=True)
+        self.assert_resume_blocked()
+        self.assertTrue(self.backup.is_symlink())
+        self.assertTrue((target / 'backup.json').is_file())
+
+    def test_resume_rejects_symlinked_and_hardlinked_backup_members(self):
+        self.prepare_verified_backup()
+        marker = self.backup / 'backup.json'
+        target = self.case / 'synthetic-marker-target'
+        target.write_bytes(marker.read_bytes()); target.chmod(0o600)
+        marker.unlink(); marker.symlink_to(target)
+        self.assert_resume_blocked()
+        self.assertTrue(marker.is_symlink())
+        marker.unlink(); marker.write_bytes(target.read_bytes()); marker.chmod(0o600)
+        code = self.backup / 'previous-mobile_capture_staging_server.py'
+        os.link(code, self.case / 'synthetic-code-hardlink')
+        self.assertEqual(code.stat().st_nlink, 2)
+        self.assert_resume_blocked()
+
+    def test_resume_requires_exact_canonical_six_key_marker_and_release_pins(self):
+        self.prepare_verified_backup()
+        path = self.backup / 'backup.json'
+        original_raw = path.read_bytes()
+        original = json.loads(original_raw)
+        mutations = []
+        extra = dict(original, unknown_key=False); mutations.append(extra)
+        missing = dict(original); del missing['grocery_journal']; mutations.append(missing)
+        for field, value in (
+            ('manifest_sha256', '0' * 64), ('source_sha256', '0' * 64),
+            ('grocery_journal', 'empty'), ('data_restore_permitted', True),
+            ('mobile_ledger_source_sha256', 'not-a-digest'), ('mobile_ledger_backup_sha256', True),
+        ):
+            mutated = dict(original); mutated[field] = value; mutations.append(mutated)
+        for index, marker in enumerate(mutations):
+            path.write_bytes((json.dumps(marker, sort_keys=True) + '\n').encode())
+            with self.subTest(mutation=index):
+                self.assert_resume_blocked()
+        for raw in (json.dumps(original, sort_keys=True, indent=2).encode(), original_raw + b' '):
+            path.write_bytes(raw)
+            self.assert_resume_blocked()
+        self.assertEqual(self.ledger.read_bytes(), self.original_ledger)
+
+    def test_resume_checks_old_code_hash_and_backup_database_hash_and_quick_check(self):
+        self.prepare_verified_backup()
+        code = self.backup / 'previous-mobile_capture_staging_server.py'
+        original_code = code.read_bytes()
+        code.write_bytes(original_code + b'\n')
+        self.assert_resume_blocked()
+        code.write_bytes(original_code)
+        saved = self.backup / 'mobile-ledger.sqlite3'
+        original_database = saved.read_bytes()
+        with sqlite3.connect(saved) as conn:
+            conn.execute("UPDATE mobile_capture_ledger SET status='synthetic-changed-backup' WHERE request_id='synthetic-private-id-0'")
+        self.assert_resume_blocked()
+        saved.write_bytes(b'synthetic-invalid-SQLite-backup')
+        marker = self.backup / 'backup.json'
+        value = json.loads(marker.read_bytes())
+        value['mobile_ledger_backup_sha256'] = digest(saved)
+        marker.write_bytes((json.dumps(value, sort_keys=True) + '\n').encode())
+        self.assert_resume_blocked()
+        self.assertNotEqual(saved.read_bytes(), original_database)
+        self.assertEqual(self.ledger.read_bytes(), self.original_ledger)
+
+    def test_resume_detects_changed_live_database_without_restoring_it(self):
+        self.prepare_verified_backup()
+        with sqlite3.connect(self.ledger) as conn:
+            conn.execute("UPDATE mobile_capture_ledger SET status='synthetic-new-terminal-state' WHERE request_id='synthetic-private-id-0'")
+        changed = self.ledger.read_bytes()
+        self.assert_resume_blocked('resume_data_changed')
+        self.assertEqual(self.ledger.read_bytes(), changed)
+
+    def test_resume_rejects_wal_mode_or_sidecars_without_creating_reader_side_effects(self):
+        self.prepare_verified_backup()
+        for suffix in ('-wal', '-shm'):
+            path = Path(str(self.ledger) + suffix)
+            path.write_bytes(b'synthetic-sidecar')
+            before = file_snapshot(self.case)
+            self.assert_resume_blocked('resume_storage_unsupported')
+            self.assertEqual(file_snapshot(self.case), before)
+            path.unlink()
+        conn = sqlite3.connect(self.ledger)
+        try:
+            self.assertEqual(conn.execute('PRAGMA journal_mode=WAL').fetchone()[0], 'wal')
+            conn.execute('PRAGMA wal_checkpoint(TRUNCATE)')
+        finally:
+            conn.close()
+        self.assertEqual(self.ledger.read_bytes()[18:20], b'\x02\x02')
+        before = file_snapshot(self.case)
+        self.assert_resume_blocked('resume_storage_unsupported')
+        self.assertEqual(file_snapshot(self.case), before)
+
+    def test_resume_rejects_checkpointed_wal_saved_backup_without_reader_side_effects(self):
+        self.prepare_verified_backup()
+        saved = self.backup / 'mobile-ledger.sqlite3'
+        # Construct checkpointed WAL main-file bytes away from the backup. Some
+        # SQLite builds retain WAL/SHM files on close; the malformed backup must
+        # start with exactly its three members so the reader guard is exercised.
+        fixture = self.case / 'synthetic-checkpointed-wal.sqlite3'
+        shutil.copyfile(saved, fixture)
+        conn = sqlite3.connect(fixture)
+        try:
+            self.assertEqual(conn.execute('PRAGMA journal_mode=WAL').fetchone()[0], 'wal')
+            self.assertEqual(conn.execute('PRAGMA wal_checkpoint(TRUNCATE)').fetchone()[0], 0)
+        finally:
+            conn.close()
+        saved.write_bytes(fixture.read_bytes())
+        self.assertEqual(saved.read_bytes()[18:20], b'\x02\x02')
+        for suffix in ('-wal', '-shm'):
+            self.assertFalse(Path(str(saved) + suffix).exists())
+        marker = self.backup / 'backup.json'
+        value = json.loads(marker.read_bytes())
+        value['mobile_ledger_backup_sha256'] = digest(saved)
+        marker.write_bytes((json.dumps(value, sort_keys=True) + '\n').encode())
+        before = self.backup_snapshot()
+        self.assert_resume_blocked('resume_backup_invalid')
+        self.assertEqual(self.backup_snapshot(), before)
+        for suffix in ('-wal', '-shm'):
+            self.assertFalse(Path(str(saved) + suffix).exists())
+        self.assertEqual(self.ledger.read_bytes(), self.original_ledger)
+
+    def test_resume_revalidates_backup_under_drain_before_stopping_service(self):
+        self.prepare_verified_backup()
+        marker = self.backup / 'backup.json'
+        corrupted = False
+        def mutate_when_reserved(_):
+            nonlocal corrupted
+            if corrupted:
+                return
+            with sqlite3.connect(self.ledger, timeout=0) as conn:
+                try:
+                    conn.execute('BEGIN IMMEDIATE')
+                except sqlite3.OperationalError:
+                    marker.write_bytes(marker.read_bytes() + b' ')
+                    corrupted = True
+                else:
+                    conn.rollback()
+        self.controller.on_snapshot = mutate_when_reserved
+        self.assert_resume_blocked()
+        self.assertTrue(corrupted)
+        self.assertEqual(self.ledger.read_bytes(), self.original_ledger)
+
+    def test_resume_revalidates_backup_after_stop_and_recovers_unchanged_code(self):
+        self.prepare_verified_backup()
+        marker = self.backup / 'backup.json'
+        damaged = marker.read_bytes() + b' '
+        self.controller.on_stop = lambda _: marker.write_bytes(damaged)
+        installer = self.installer(resume_verified_backup=True)
+        with mock.patch.object(installer, '_backup', side_effect=AssertionError('resume must not create another backup')):
+            report = installer.apply()
+        self.assertEqual((report['status'], report['code']), ('rolled_back', 'resume_backup_invalid'))
+        self.assertTrue(self.controller.active)
+        self.assert_old_runtime()
+        self.assertEqual(marker.read_bytes(), damaged)
+        self.assertEqual(self.ledger.read_bytes(), self.original_ledger)
+
+    def test_cli_resume_flag_can_select_preflight_without_apply_or_live_controller(self):
+        argv = ['install_release.py', '--package', str(self.package), '--backup-root', str(self.backup_root),
+                '--lock-file', str(self.lock_file), '--health-url', 'https://synthetic.invalid/health',
+                '--resume-verified-backup']
+        with mock.patch('sys.argv', argv), mock.patch.object(install, 'Installer') as factory, \
+                mock.patch.object(install, 'SystemdController', return_value=self.controller), \
+                mock.patch.object(install, 'HTTPSHealth', return_value=self.health), \
+                mock.patch('sys.stdout', new_callable=io.StringIO) as output:
+            factory.return_value.preflight.return_value = {'status': 'preflight_ok'}
+            install.main()
+        self.assertIs(factory.call_args.kwargs['resume_verified_backup'], True)
+        factory.return_value.preflight.assert_called_once()
+        factory.return_value.apply.assert_not_called()
+        self.assertEqual(json.loads(output.getvalue()), {'status': 'preflight_ok'})
+        self.assertEqual(self.controller.events, [])
 
     def test_manifest_and_runtime_tampering_fail_before_service_actions(self):
         for name in ('manifest.json', 'grocery_capture.py'):

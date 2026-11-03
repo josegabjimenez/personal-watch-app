@@ -201,11 +201,14 @@ class HTTPSHealth:
 
 class Installer:
     def __init__(self, paths: Paths, controller, health, *, helper_sha256: str = HELPER_SHA256,
-                 lock_timeout: float = 5.0, drain_timeout: float = 5.0):
+                 lock_timeout: float = 5.0, drain_timeout: float = 5.0,
+                 startup_timeout: float = 5.0, resume_verified_backup: bool = False):
         self.paths, self.controller, self.health = paths, controller, health
         self.helper_sha256 = helper_sha256
         self.lock_timeout = min(max(lock_timeout, 0), 5.0)
         self.drain_timeout = min(max(drain_timeout, 0), 5.0)
+        self.startup_timeout = min(max(startup_timeout, 0), 5.0)
+        self.resume_verified_backup = resume_verified_backup
         self.backup = paths.backup_root / ("release-" + MANIFEST_SHA256[:16])
         self.package_bytes: dict[str, bytes] = {}
 
@@ -277,6 +280,85 @@ class Installer:
                 time.sleep(0.25)
         raise InstallError("health_mismatch")
 
+    def _verify_resume_backup(self, runtime: Runtime, current=None) -> None:
+        """Read only the original exclusive backup; never repair or replace it."""
+        own = current is None
+        try:
+            if (self.paths.backup_root.is_symlink() or self.backup.is_symlink() or not self.backup.is_dir()
+                    or stat.S_IMODE(self.backup.stat().st_mode) != 0o700 or self.backup.stat().st_uid != os.geteuid()):
+                raise InstallError("resume_backup_invalid")
+            names = {"previous-mobile_capture_staging_server.py", "mobile-ledger.sqlite3", "backup.json"}
+            if {path.name for path in self.backup.iterdir()} != names:
+                raise InstallError("resume_backup_invalid")
+            for name in names:
+                member = self.backup / name
+                info = member.lstat()
+                if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                    raise InstallError("resume_backup_invalid")
+                if name != "previous-mobile_capture_staging_server.py" and (
+                        info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o600):
+                    raise InstallError("resume_backup_invalid")
+            original = self.backup / "previous-mobile_capture_staging_server.py"
+            old = original.stat()
+            live = runtime.entrypoint.stat()
+            if ((old.st_uid, old.st_gid, stat.S_IMODE(old.st_mode)) != runtime.metadata
+                    or (live.st_uid, live.st_gid, stat.S_IMODE(live.st_mode)) != runtime.metadata
+                    or digest(regular_bytes(original)) != BASELINE_SHA256):
+                raise InstallError("resume_backup_invalid")
+            raw_marker = regular_bytes(self.backup / "backup.json")
+            marker = json.loads(raw_marker)
+            keys = {"manifest_sha256", "source_sha256", "mobile_ledger_source_sha256",
+                    "mobile_ledger_backup_sha256", "grocery_journal", "data_restore_permitted"}
+            if (not isinstance(marker, dict) or set(marker) != keys
+                    or raw_marker != (json.dumps(marker, sort_keys=True) + "\n").encode()
+                    or marker["manifest_sha256"] != MANIFEST_SHA256 or marker["source_sha256"] != BASELINE_SHA256
+                    or marker["grocery_journal"] != "absent" or marker["data_restore_permitted"] is not False):
+                raise InstallError("resume_backup_invalid")
+            for field in ("mobile_ledger_source_sha256", "mobile_ledger_backup_sha256"):
+                value = marker[field]
+                if not isinstance(value, str) or len(value) != 64 or any(char not in "0123456789abcdef" for char in value):
+                    raise InstallError("resume_backup_invalid")
+            saved = self.backup / "mobile-ledger.sqlite3"
+            saved_bytes = regular_bytes(saved)
+            if (saved_bytes[18:20] != b"\x01\x01"
+                    or digest(saved_bytes) != marker["mobile_ledger_backup_sha256"]):
+                raise InstallError("resume_backup_invalid")
+            # This backup is immutable by contract. Even a validation reader
+            # must never create journal/WAL sidecars beside the original files.
+            source = sqlite3.connect("file:" + quote(str(saved), safe="/") + "?mode=ro&immutable=1", uri=True, timeout=5)
+            try:
+                source.execute("PRAGMA query_only=ON")
+                quick_check(source)
+            finally:
+                source.close()
+            # Reject WAL before opening a reader, so validation cannot create
+            # a WAL shared-memory sidecar. Main-file hashes do not cover frames.
+            live_bytes = regular_bytes(runtime.ledger)
+            if live_bytes[18:20] != b"\x01\x01" or any(
+                    Path(str(runtime.ledger) + suffix).exists() or Path(str(runtime.ledger) + suffix).is_symlink()
+                    for suffix in ("-wal", "-shm")):
+                raise InstallError("resume_storage_unsupported")
+            if digest(live_bytes) != marker["mobile_ledger_source_sha256"]:
+                raise InstallError("resume_data_changed")
+            if own:
+                current = readonly_db(runtime.ledger)
+            quick_check(current)
+            if current.execute("PRAGMA journal_mode").fetchone()[0].lower() != "delete":
+                raise InstallError("resume_storage_unsupported")
+            info = runtime.ledger.stat()
+            if ((info.st_dev, info.st_ino) != runtime.ledger_identity
+                    or digest(regular_bytes(runtime.ledger)) != marker["mobile_ledger_source_sha256"]):
+                raise InstallError("resume_data_changed")
+        except InstallError as error:
+            if error.code.startswith("resume_"):
+                raise
+            raise InstallError("resume_backup_invalid") from None
+        except (OSError, ValueError, KeyError, sqlite3.Error):
+            raise InstallError("resume_backup_invalid") from None
+        finally:
+            if own and current is not None:
+                current.close()
+
     def _initial_state(self, runtime: Runtime, conn=None) -> None:
         journal = Path(str(runtime.ledger) + ".grocery.sqlite3")
         if journal.exists() or journal.is_symlink():
@@ -285,7 +367,9 @@ class Installer:
             sibling = runtime.entrypoint.parent / name
             if name != SERVER and (sibling.exists() or sibling.is_symlink()):
                 raise InstallError("runtime_present")
-        if self.backup.exists() or self.backup.is_symlink():
+        if self.resume_verified_backup:
+            self._verify_resume_backup(runtime, conn)
+        elif self.backup.exists() or self.backup.is_symlink():
             raise InstallError("backup_exists")
         own = conn is None
         try:
@@ -312,7 +396,8 @@ class Installer:
 
     def preflight(self) -> dict:
         self._inspect()
-        return self._report("preflight_ok", journal_absent=True, runtime_siblings_absent=True)
+        return self._report("preflight_ok", journal_absent=True, runtime_siblings_absent=True,
+                            backup_reused=self.resume_verified_backup)
 
     @contextmanager
     def _deployment_lock(self):
@@ -469,7 +554,30 @@ class Installer:
             return False
 
     def _verify_started(self, runtime: Runtime, source_hash: str, *, target: bool) -> None:
-        current = self._runtime(self.controller.snapshot(), source_hash)
+        # Type=simple may report an active launch wrapper before it execs the
+        # original Python argv. Wait for that exact signature, not health alone.
+        deadline = time.monotonic() + self.startup_timeout
+        last_code = "service_inactive"
+        while True:
+            try:
+                snapshot = self.controller.snapshot()
+                if not snapshot.active or snapshot.pid <= 0:
+                    last_code = "service_inactive"
+                elif snapshot.argv != runtime.snapshot.argv:
+                    last_code = "service_arguments"
+                elif snapshot.working_directory != runtime.snapshot.working_directory:
+                    last_code = "service_changed"
+                else:
+                    break
+            except InstallError as error:
+                if error.code != "service_metadata":
+                    raise
+                last_code = error.code
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise InstallError(last_code)
+            time.sleep(min(0.05, remaining))
+        current = self._runtime(snapshot, source_hash)
         if (current.snapshot.argv != runtime.snapshot.argv or current.snapshot.working_directory != runtime.snapshot.working_directory
                 or current.ledger != runtime.ledger or current.helper != runtime.helper or current.helper_env != runtime.helper_env):
             raise InstallError("service_changed")
@@ -542,7 +650,8 @@ class Installer:
                 if digest(regular_bytes(runtime.entrypoint)) != BASELINE_SHA256 or digest(regular_bytes(runtime.helper)) != self.helper_sha256:
                     raise InstallError("baseline_drift")
                 self._initial_state(runtime)
-                self._backup(runtime)
+                if not self.resume_verified_backup:
+                    self._backup(runtime)
                 with tempfile.TemporaryDirectory(prefix=".grocery-stage-", dir=runtime.entrypoint.parent) as temporary:
                     staging = Path(temporary)
                     for name, raw in self.package_bytes.items():
@@ -555,7 +664,8 @@ class Installer:
                 self.controller.start()
                 self._verify_started(runtime, ARTIFACTS[SERVER], target=True)
                 return self._report("installed", artifact_sha256=ARTIFACTS, backup_verified=True,
-                                    arguments_unchanged=True, health_profile_unchanged=True)
+                                    arguments_unchanged=True, health_profile_unchanged=True,
+                                    backup_reused=self.resume_verified_backup)
             except Exception as error:
                 if guard is not None:
                     guard.rollback()
@@ -579,10 +689,13 @@ def main() -> None:
     parser.add_argument("--lock-file", type=Path)
     parser.add_argument("--health-url", required=True)
     parser.add_argument("--apply", action="store_true")
+    parser.add_argument("--resume-verified-backup", action="store_true",
+                        help="Explicitly validate and reuse the unchanged backup from a failed initial activation")
     args = parser.parse_args()
     try:
         paths = Paths(args.package, args.backup_root, args.lock_file or args.backup_root / ".grocery-install.lock")
-        installer = Installer(paths, SystemdController(), HTTPSHealth(args.health_url))
+        installer = Installer(paths, SystemdController(), HTTPSHealth(args.health_url),
+                              resume_verified_backup=args.resume_verified_backup)
         report = installer.apply() if args.apply else installer.preflight()
     except InstallError as error:
         report = {"status": "blocked", "code": error.code, "unit": UNIT, "data_restored": False}

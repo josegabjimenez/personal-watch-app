@@ -78,8 +78,8 @@ for a changed release; never refresh pins merely to make a failing build pass.
 application imports on the target host. It pins the exact sealed manifest and
 four runtime hashes. This is an initial-activation tool: it requires the deployed
 f6 baseline, the pinned external helper, no grocery journal, no sibling grocery
-modules, no pending grocery transport state and no existing backup for this
-release. It preserves the current unit, command arguments, configuration and
+modules, no pending grocery transport state and, in normal initial mode, no
+existing backup for this release. It preserves the current unit, command arguments, configuration and
 secret locations. It does not enable AI, other routes or a paid Apple workflow.
 
 With the real existing paths substituted, its default is preflight only:
@@ -98,6 +98,45 @@ python3 install_release.py --package /path/to/sealed-release \
   --backup-root /path/to/private-backups \
   --health-url https://existing-host.example/health --apply
 ```
+
+### Resume one unchanged failed initial attempt
+
+Default preflight and `--apply` still refuse an existing release backup. The
+explicit `--resume-verified-backup` option validates and reuses that same original
+backup; it creates no replacement, copy or second backup directory. Use exactly
+the original backup root. Do not rename or delete the existing backup to bypass
+the initial-activation guard.
+
+First run read-only recovery preflight, then add `--apply` only after the corrected
+executor's final independent review and the normal action review:
+
+```sh
+python3 install_release.py --package /path/to/sealed-release \
+  --backup-root /path/to/original-private-backups \
+  --health-url https://existing-host.example/health --resume-verified-backup
+python3 install_release.py --package /path/to/sealed-release \
+  --backup-root /path/to/original-private-backups \
+  --health-url https://existing-host.example/health --resume-verified-backup --apply
+```
+
+Resume requires the exact private ordinary backup directory and its three
+original ordinary, singly linked files: `backup.json`,
+`previous-mobile_capture_staging_server.py` and `mobile-ledger.sqlite3`. The
+canonical marker's exact fields, sealed release identity, old-code hash and
+metadata, database backup hash and quick check must all match. The recovered
+live database must still match the marker's pre-backup bytes exactly and pass a
+quick check. WAL/non-DELETE storage or WAL sidecars are refused because a main
+file hash cannot establish equality of committed WAL contents. The baseline,
+helper, absent journal/siblings and no-pending-work guards continue to apply.
+These checks repeat under the drain reservation and again with the unit off.
+No backup or database is overwritten, restored, renamed, reset or deleted.
+
+After either new-code or rollback startup, the executor waits up to five seconds
+for an active process with the exact original arguments and working directory.
+A transient launcher is not accepted as ready. Once the exact signature appears,
+the existing strict source/helper/hash/metadata and HTTPS checks run. A persistent
+mismatch remains a failure; neither health alone nor a relaxed argument match is
+sufficient.
 
 The deployment lock and parent SQLite drain are bounded to five seconds. The
 installer rechecks source/helper hashes and the same process before stopping
