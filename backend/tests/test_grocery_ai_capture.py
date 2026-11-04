@@ -13,6 +13,7 @@ import unittest
 from unittest import mock
 
 import grocery_ai
+import grocery_ai_budget
 import grocery_capture as batch
 import grocery_helper_adapter as adapter
 from fixtures.grocery_test_support import grocery_environment
@@ -28,6 +29,8 @@ class GroceryAICaptureTests(unittest.TestCase):
         self.helper, self.fake = environment.__enter__()
         self.addCleanup(environment.__exit__, None, None, None)
         self.cfg = SimpleNamespace(ledger_path=self.directory / "synthetic-parent.sqlite", aura_helper=self.helper)
+        batch.init_db(batch.journal_path(self.cfg.ledger_path))
+        grocery_ai_budget.initialize_schema(batch.journal_path(self.cfg.ledger_path))
         self.payload = {
             "request_id": "synthetic-ai-request",
             "route": {"agent": "aura", "intent": "grocery", "domain": batch.DOMAIN},
@@ -37,7 +40,8 @@ class GroceryAICaptureTests(unittest.TestCase):
         self.addCleanup(mock.patch.stopall)
         mock.patch.dict("os.environ", {"GROCERY_AI_ENABLED": "1"}).start()
         self.config = mock.patch.object(grocery_ai, "config_from_environment",
-            return_value=SimpleNamespace(api_key="synthetic-key", model="synthetic-model", timeout=1)).start()
+            return_value=SimpleNamespace(api_key="synthetic-key", model="gpt-6-luna", timeout=1)).start()
+        self.provider_impl = grocery_ai.interpret
         self.model = mock.patch.object(grocery_ai, "interpret", return_value=self.proposal("leche", "huevos")).start()
 
     @staticmethod
@@ -133,6 +137,35 @@ class GroceryAICaptureTests(unittest.TestCase):
         self.assertEqual(response["status"], "needs_input")
         self.model.assert_not_called()
         self.assertEqual(self.fake.writes, [])
+
+    def test_budget_exhaustion_is_cached_no_write_and_never_reaches_provider(self):
+        guard = grocery_ai_budget.GroceryAIBudget(batch.journal_path(self.cfg.ledger_path))
+        for index in range(6):
+            self.assertTrue(guard.reserve(f"synthetic-unknown-{index}", "a" * 64).allowed)
+        self.model.side_effect = self.provider_impl
+        with mock.patch.object(grocery_ai, "_post_json", side_effect=AssertionError("exhausted budget dispatched")) as post:
+            first = self.execute()
+            replay = self.execute()
+        self.assertEqual(first["status"], "needs_input")
+        self.assertIn("USD 2/mes", first["display_message"])
+        self.assertEqual(replay["display_message"], first["display_message"])
+        self.assertEqual(self.fake.writes, [])
+        self.model.assert_called_once()
+        post.assert_not_called()
+
+    def test_missing_budget_state_fails_closed_without_reinitializing(self):
+        guard_path = batch.journal_path(self.cfg.ledger_path)
+        with sqlite3.connect(guard_path) as conn:
+            conn.execute("DROP TABLE grocery_ai_budget_state")
+        self.model.side_effect = self.provider_impl
+        with mock.patch.object(grocery_ai, "_post_json", side_effect=AssertionError("missing guard dispatched")) as post:
+            response = self.execute()
+        self.assertEqual(response["status"], "needs_input")
+        self.assertIn("Presupuesto", response["display_message"])
+        self.assertEqual(self.fake.writes, [])
+        post.assert_not_called()
+        with sqlite3.connect(guard_path) as conn:
+            self.assertIsNone(conn.execute("SELECT name FROM sqlite_master WHERE name='grocery_ai_budget_state'").fetchone())
 
     def test_accepted_interpretation_survives_prepare_outage_and_configuration_removal(self):
         with mock.patch.object(adapter.GroceryAdapter, "prepare_semantic",

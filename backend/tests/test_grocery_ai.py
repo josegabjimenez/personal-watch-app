@@ -9,6 +9,7 @@ import copy
 import io
 import json
 import os
+import sqlite3
 from pathlib import Path
 import tempfile
 import threading
@@ -18,6 +19,7 @@ from unittest import mock
 from urllib.error import HTTPError
 
 import grocery_ai as ai
+from grocery_ai_budget import GroceryAIBudget, initialize_schema
 
 
 CATALOG = [
@@ -33,7 +35,10 @@ def proposal(*items, decision="apply", question=None):
 
 
 def completed(value=None, *, text=None):
-    return {"status": "completed", "output": [
+    return {"status": "completed", "model": ai.DEFAULT_MODEL, "service_tier": "default",
+            "usage": {"input_tokens": 1200, "output_tokens": 200, "total_tokens": 1400,
+                      "input_tokens_details": {"cached_tokens": 0},
+                      "output_tokens_details": {"reasoning_tokens": 150}}, "output": [
         {"type": "reasoning", "summary": []},
         {"type": "message", "role": "assistant", "status": "completed", "content": [
             {"type": "output_text", "text": text if text is not None else json.dumps(value)}
@@ -42,11 +47,32 @@ def completed(value=None, *, text=None):
 
 
 class InterpretationTests(unittest.TestCase):
+    def setUp(self):
+        self.folder = tempfile.TemporaryDirectory()
+        self.addCleanup(self.folder.cleanup)
+        self.sequence = 0
+
+    def new_budget(self):
+        self.sequence += 1
+        path = Path(self.folder.name) / f"journal-{self.sequence}.sqlite3"
+        with sqlite3.connect(path) as conn:
+            conn.execute("CREATE TABLE grocery_batches (plan_json TEXT NOT NULL)")
+        path.chmod(0o600)
+        initialize_schema(str(path))
+        return GroceryAIBudget(str(path))
+
+    def invoke(self, *args, **kwargs):
+        if "budget" not in kwargs:
+            kwargs["budget"] = self.new_budget()
+        kwargs.setdefault("request_id", f"synthetic-{self.sequence}")
+        kwargs.setdefault("payload_hash", "1" * 64)
+        return ai.interpret(*args, **kwargs)
+
     def call(self, text="agrega leche", catalog=None, value=None, **kwargs):
         if value is None:
             value = proposal(("leche", "milk-id"))
         with mock.patch.object(ai, "_post_json", return_value=completed(value)) as post:
-            result = ai.interpret(text, CATALOG if catalog is None else catalog,
+            result = self.invoke(text, CATALOG if catalog is None else catalog,
                                   api_key="synthetic-key", **kwargs)
         return result, post
 
@@ -68,10 +94,12 @@ class InterpretationTests(unittest.TestCase):
                 post.assert_called_once()
 
     def test_request_contract_full_catalog_opt_out_storage_no_tools_and_budget(self):
-        _, post = self.call(model="gpt-5-mini-custom", timeout=2)
+        _, post = self.call(timeout=2)
         body = json.loads(post.call_args.args[0])
         self.assertEqual(post.call_args.args[1:], ("synthetic-key", 2.0))
-        self.assertEqual(body["model"], "gpt-5-mini-custom")
+        self.assertEqual(body["model"], "gpt-6-luna")
+        self.assertEqual(body["service_tier"], "default")
+        self.assertEqual(body["prompt_cache_options"], {"mode": "implicit", "ttl": "30m"})
         self.assertEqual(body["reasoning"], {"effort": "low"})
         self.assertFalse(body["store"])
         self.assertEqual(body["tools"], [])
@@ -87,7 +115,164 @@ class InterpretationTests(unittest.TestCase):
         self.assertFalse(schema["properties"]["items"]["items"]["additionalProperties"])
         source = json.loads(body["input"])
         self.assertEqual(source, {"text": "agrega leche", "catalog": CATALOG, "max_items": ai.MAX_ITEMS})
-        self.assertEqual(ai.DEFAULT_MODEL, "gpt-5-mini")
+        self.assertEqual(ai.DEFAULT_MODEL, "gpt-6-luna")
+
+    def test_missing_or_invalid_budget_identity_blocks_before_dispatch(self):
+        budget = self.new_budget()
+        for changes in ({}, {"budget": object()}, {"budget": budget},
+                        {"budget": budget, "request_id": "synthetic", "payload_hash": "bad"}):
+            with self.subTest(changes=changes), mock.patch.object(ai, "_bounded_post") as post:
+                with self.assertRaisesRegex(ai.InterpretationUnavailable, "^grocery_ai_budget_unavailable$"):
+                    ai.interpret("leche", CATALOG, api_key="synthetic", **changes)
+                post.assert_not_called()
+
+    def test_reservation_follows_input_validation_and_precedes_single_dispatch(self):
+        budget = self.new_budget()
+        events = []
+        reserve = budget.reserve
+
+        def admit(*args, **kwargs):
+            events.append("reserve")
+            return reserve(*args, **kwargs)
+
+        def dispatch(*args):
+            self.assertEqual(events, ["reserve"])
+            events.append("dispatch")
+            return completed(proposal(("leche", "milk-id")))
+
+        with mock.patch.object(budget, "reserve", side_effect=admit) as reservation:
+            with mock.patch.object(ai, "_bounded_post", side_effect=dispatch) as post:
+                with self.assertRaisesRegex(ai.InterpretationUnavailable, "invalid_capture_text"):
+                    self.invoke("", CATALOG, api_key="synthetic", budget=budget)
+                reservation.assert_not_called()
+                self.invoke("leche", CATALOG, api_key="synthetic", budget=budget,
+                            request_id="ordered", payload_hash="2" * 64)
+                reservation.assert_called_once_with("ordered", "2" * 64, max_output_tokens=3000)
+                post.assert_called_once()
+        self.assertEqual(events, ["reserve", "dispatch"])
+
+    def test_duplicate_request_and_exhausted_month_never_dispatch(self):
+        budget = self.new_budget()
+        budget.reserve("duplicate", "3" * 64)
+        with mock.patch.object(ai, "_bounded_post") as post:
+            with self.assertRaisesRegex(ai.InterpretationUnavailable, "^grocery_ai_budget_duplicate$"):
+                self.invoke("leche", CATALOG, api_key="synthetic", budget=budget,
+                            request_id="duplicate", payload_hash="3" * 64)
+            for number in range(100):
+                if not budget.reserve(f"reserve-{number}", "4" * 64).allowed:
+                    break
+            else:
+                self.fail("monthly budget did not close")
+            with self.assertRaisesRegex(ai.InterpretationUnavailable, "^grocery_ai_budget_exhausted$"):
+                self.invoke("leche", CATALOG, api_key="synthetic", budget=budget,
+                            request_id="exhausted", payload_hash="5" * 64)
+            post.assert_not_called()
+
+    def test_known_usage_is_settled_before_refusal_incomplete_or_schema_validation(self):
+        refusal = completed()
+        refusal["output"][1]["content"] = [{"type": "refusal", "refusal": "private reason"}]
+        incomplete = completed()
+        incomplete.update(status="incomplete", incomplete_details={"reason": "max_output_tokens"})
+        malformed = completed(text="not-json")
+        for response in (refusal, incomplete, malformed):
+            budget = self.new_budget()
+            settlement = budget.settle
+            settled = []
+
+            def settle(*args):
+                result = settlement(*args)
+                settled.append(result)
+                return result
+
+            with self.subTest(status=response["status"]), mock.patch.object(budget, "settle", side_effect=settle) as settle_mock:
+                with mock.patch.object(ai, "_bounded_post", return_value=response):
+                    with self.assertRaises(ai.InterpretationUnavailable):
+                        self.invoke("leche", CATALOG, api_key="synthetic", budget=budget)
+                self.assertTrue(settled[0].settled)
+                self.assertEqual(settle_mock.call_args.args[2], response)
+
+    def test_unknown_usage_keeps_reservation_and_cannot_retry(self):
+        budget = self.new_budget()
+        response = completed(proposal(("leche", "milk-id")))
+        del response["usage"]
+        with mock.patch.object(budget, "settle", wraps=budget.settle) as settle:
+            with mock.patch.object(ai, "_bounded_post", return_value=response) as post:
+                result = self.invoke("leche", CATALOG, api_key="synthetic", budget=budget,
+                                     request_id="unknown", payload_hash="6" * 64)
+                self.assertEqual(result["decision"], "apply")
+                self.assertFalse(budget.settle("unknown", "6" * 64, response).settled)
+                with self.assertRaisesRegex(ai.InterpretationUnavailable, "grocery_ai_budget_duplicate"):
+                    self.invoke("leche", CATALOG, api_key="synthetic", budget=budget,
+                                request_id="unknown", payload_hash="6" * 64)
+                post.assert_called_once()
+                self.assertEqual(settle.call_args.args[2], response)
+
+    def test_reasoning_tokens_are_included_in_output_usage_once(self):
+        charges = []
+        for reasoning_tokens in (0, 150, 200):
+            budget = self.new_budget()
+            response = completed(proposal(("leche", "milk-id")))
+            response["usage"]["output_tokens_details"]["reasoning_tokens"] = reasoning_tokens
+            settlement = budget.settle
+
+            def settle(*args):
+                result = settlement(*args)
+                charges.append(result.charged_nanodollars)
+                return result
+
+            with mock.patch.object(budget, "settle", side_effect=settle):
+                with mock.patch.object(ai, "_bounded_post", return_value=response):
+                    self.invoke("leche", CATALOG, api_key="synthetic", budget=budget)
+        self.assertGreater(charges[0], 0)
+        self.assertEqual(charges, [charges[0]] * 3)
+
+    def test_timed_out_dispatch_never_releases_or_late_settles(self):
+        budget = self.new_budget()
+        release, finished = threading.Event(), threading.Event()
+
+        def slow(*_):
+            release.wait(2)
+            finished.set()
+            return completed(proposal(("leche", "milk-id")))
+
+        try:
+            with mock.patch.object(ai, "_post_json", side_effect=slow) as post:
+                with mock.patch.object(budget, "settle", wraps=budget.settle) as settle:
+                    with self.assertRaisesRegex(ai.InterpretationUnavailable, "interpreter_timeout"):
+                        self.invoke("leche", CATALOG, api_key="synthetic", budget=budget,
+                                    request_id="timed-out", payload_hash="8" * 64, timeout=0.03)
+                    release.set()
+                    self.assertTrue(finished.wait(1))
+                    with self.assertRaisesRegex(ai.InterpretationUnavailable, "grocery_ai_budget_duplicate"):
+                        self.invoke("leche", CATALOG, api_key="synthetic", budget=budget,
+                                    request_id="timed-out", payload_hash="8" * 64)
+                    settle.assert_not_called()
+                    post.assert_called_once()
+        finally:
+            release.set()
+
+    def test_unapproved_response_model_or_tier_cannot_propose_writes(self):
+        for changes in ({"model": "gpt-5-mini"}, {"model": "gpt-6-luna-latest"},
+                        {"service_tier": "priority"}, {"service_tier": None}):
+            response = completed(proposal(("leche", "milk-id")))
+            response.update(changes)
+            with self.subTest(changes=changes), mock.patch.object(ai, "_bounded_post", return_value=response):
+                with self.assertRaisesRegex(ai.InterpretationUnavailable, "interpreter_invalid_response_identity"):
+                    self.invoke("leche", CATALOG, api_key="synthetic")
+
+    def test_settlement_storage_error_aborts_success_and_never_retries(self):
+        budget = self.new_budget()
+        with mock.patch.object(budget, "settle", side_effect=RuntimeError("private path or provider output")):
+            with mock.patch.object(ai, "_bounded_post", return_value=completed(proposal(("leche", "milk-id")))) as post:
+                with self.assertRaisesRegex(ai.InterpretationUnavailable, "^grocery_ai_budget_unavailable$") as caught:
+                    self.invoke("leche", CATALOG, api_key="synthetic", budget=budget,
+                                request_id="settle-failure", payload_hash="7" * 64)
+                self.assertNotIn("private", str(caught.exception))
+                self.assertIsNone(caught.exception.__cause__)
+                with self.assertRaisesRegex(ai.InterpretationUnavailable, "grocery_ai_budget_duplicate"):
+                    self.invoke("leche", CATALOG, api_key="synthetic", budget=budget,
+                                request_id="settle-failure", payload_hash="7" * 64)
+                post.assert_called_once()
 
     def test_untrusted_injections_are_data_and_cannot_supply_unknown_ids(self):
         catalog = copy.deepcopy(CATALOG)
@@ -288,7 +473,7 @@ class InterpretationTests(unittest.TestCase):
         for text in variants:
             with self.subTest(text=text), mock.patch.object(ai, "_post_json", return_value=completed(text=text)):
                 with self.assertRaisesRegex(ai.InterpretationUnavailable, "invalid_schema"):
-                    ai.interpret("leche", CATALOG, api_key="synthetic")
+                    self.invoke("leche", CATALOG, api_key="synthetic")
 
     def test_provider_incomplete_refusal_tool_messages_or_unexpected_output_rejected(self):
         refusal = completed(proposal(("leche", "milk-id")))
@@ -308,12 +493,13 @@ class InterpretationTests(unittest.TestCase):
         for value in variants:
             with self.subTest(value=value), mock.patch.object(ai, "_post_json", return_value=value):
                 with self.assertRaises(ai.InterpretationUnavailable) as caught:
-                    ai.interpret("leche", CATALOG, api_key="synthetic")
+                    self.invoke("leche", CATALOG, api_key="synthetic")
                 self.assertNotIn("private", str(caught.exception))
 
     def test_invalid_configuration_or_oversize_input_never_calls_provider(self):
         variants = [{"text": ""}, {"text": "x" * (ai.MAX_TEXT_LENGTH + 1)}, {"text": "leche\x00"},
                     {"api_key": ""}, {"api_key": "secret\nheader"}, {"model": "bad model"},
+                    {"model": "gpt-5-mini"}, {"model": "gpt-6-luna-custom"},
                     {"timeout": 0}, {"timeout": True}, {"timeout": float("nan")},
                     {"timeout": float("inf")}, {"timeout": 31}, {"timeout": 10 ** 1000},
                     {"catalog": [CATALOG[0]] * (ai.MAX_CATALOG_ITEMS + 1)},
@@ -328,7 +514,7 @@ class InterpretationTests(unittest.TestCase):
             kwargs.update(changes)
             with self.subTest(changes=changes), mock.patch.object(ai, "_post_json") as post:
                 with self.assertRaises(ai.InterpretationUnavailable):
-                    ai.interpret(**kwargs)
+                    self.invoke(**kwargs)
                 post.assert_not_called()
 
     def test_complete_200_candidate_catalog_is_supplied_without_truncation(self):
@@ -342,7 +528,7 @@ class InterpretationTests(unittest.TestCase):
         with mock.patch.object(ai, "_post_json", side_effect=HTTPError(ai.OPENAI_RESPONSES_URL, 401,
                 private, {}, io.BytesIO(private.encode()))) as post:
             with self.assertRaisesRegex(ai.InterpretationUnavailable, "^interpreter_unavailable$") as caught:
-                ai.interpret("leche", CATALOG, api_key=private)
+                self.invoke("leche", CATALOG, api_key=private)
         self.assertNotIn(private, str(caught.exception))
         self.assertIsNone(caught.exception.__cause__)
         post.assert_called_once()
@@ -358,10 +544,10 @@ class InterpretationTests(unittest.TestCase):
             with mock.patch.object(ai, "_TRANSPORT_SLOTS", slot), mock.patch.object(ai, "_post_json", side_effect=slow) as post:
                 started = time.monotonic()
                 with self.assertRaisesRegex(ai.InterpretationUnavailable, "interpreter_timeout"):
-                    ai.interpret("leche", CATALOG, api_key="synthetic", timeout=0.03)
+                    self.invoke("leche", CATALOG, api_key="synthetic", timeout=0.03)
                 self.assertLess(time.monotonic() - started, 0.5)
                 with self.assertRaisesRegex(ai.InterpretationUnavailable, "interpreter_busy"):
-                    ai.interpret("leche", CATALOG, api_key="synthetic", timeout=0.03)
+                    self.invoke("leche", CATALOG, api_key="synthetic", timeout=0.03)
                 self.assertEqual(post.call_count, 1)
         finally:
             release.set()
@@ -376,7 +562,7 @@ class InterpretationTests(unittest.TestCase):
                 acquired += 1
             with mock.patch.object(ai, "_post_json") as post:
                 with self.assertRaisesRegex(ai.InterpretationUnavailable, "interpreter_busy"):
-                    ai.interpret("leche", CATALOG, api_key="synthetic")
+                    self.invoke("leche", CATALOG, api_key="synthetic")
             post.assert_not_called()
         finally:
             for _ in range(acquired):
@@ -416,12 +602,12 @@ class ConfigurationTests(unittest.TestCase):
             path.write_text("synthetic-key\n")
             path.chmod(0o600)
             env = {"GROCERY_AI_ENABLED": "1", "GROCERY_AI_OPENAI_KEY_FILE": str(path),
-                   "GROCERY_AI_MODEL": "configured-model", "GROCERY_AI_TIMEOUT_SECONDS": "3.5",
+                   "GROCERY_AI_MODEL": "gpt-6-luna", "GROCERY_AI_TIMEOUT_SECONDS": "3.5",
                    "OPENAI_API_KEY": "never-used"}
             with mock.patch.dict(os.environ, env, clear=True):
                 config = ai.config_from_environment()
             self.assertEqual(config.api_key, "synthetic-key")
-            self.assertEqual(config.model, "configured-model")
+            self.assertEqual(config.model, "gpt-6-luna")
             self.assertEqual(config.timeout, 3.5)
             self.assertNotIn("synthetic-key", repr(config))
 
@@ -448,7 +634,8 @@ class ConfigurationTests(unittest.TestCase):
 
     def test_invalid_timeout_model_key_content_or_owner_is_safe(self):
         for changes in ({"GROCERY_AI_TIMEOUT_SECONDS": "nan"}, {"GROCERY_AI_TIMEOUT_SECONDS": "31"},
-                        {"GROCERY_AI_TIMEOUT_SECONDS": ""}, {"GROCERY_AI_MODEL": "bad model"}):
+                        {"GROCERY_AI_TIMEOUT_SECONDS": ""}, {"GROCERY_AI_MODEL": "bad model"},
+                        {"GROCERY_AI_MODEL": "gpt-5-mini"}, {"GROCERY_AI_MODEL": "gpt-6-luna-latest"}):
             with self.subTest(changes=changes), mock.patch.dict(os.environ, {"GROCERY_AI_ENABLED": "1", **changes}, clear=True):
                 with self.assertRaises(ai.InterpretationUnavailable):
                     ai.config_from_environment()

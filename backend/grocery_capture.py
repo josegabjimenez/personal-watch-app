@@ -12,6 +12,7 @@ from typing import Any
 from grocery_helper_adapter import GroceryAdapter, GroceryAdapterError, child_operation_id
 from grocery_item_parser import GroceryParseError, MAX_ITEMS, parse_grocery_items
 import grocery_ai
+from grocery_ai_budget import GroceryAIBudget, BudgetGuardError
 
 
 DOMAIN = "aura.grocery_capture"
@@ -229,8 +230,19 @@ def _ai_preflight(payload: dict, path: Path, body_hash: str, existing: tuple, ad
             try:
                 text = str((payload.get("capture") or {}).get("text") or "")
                 proposal = grocery_ai.interpret(text,
-                    catalog, api_key=config.api_key, model=config.model, timeout=config.timeout)
-            except grocery_ai.InterpretationUnavailable:
+                    catalog, api_key=config.api_key, model=config.model, timeout=config.timeout,
+                    budget=GroceryAIBudget(path), request_id=request_id, payload_hash=body_hash)
+            except (grocery_ai.InterpretationUnavailable, BudgetGuardError) as error:
+                if str(error) == "grocery_ai_budget_exhausted":
+                    return store_no_write(path, request_id, body_hash, no_write(payload,
+                        "Mercado IA sin presupuesto disponible · no cambié nada (USD 2/mes)",
+                        "No queda reserva suficiente para otra llamada segura; el mes se calcula en Bogotá."),
+                        expected_status="interpreting")
+                if isinstance(error, BudgetGuardError) or str(error).startswith("grocery_ai_budget_"):
+                    return store_no_write(path, request_id, body_hash, no_write(payload,
+                        "Presupuesto de Mercado IA no disponible · no cambié nada",
+                        "Revisa la configuración del presupuesto antes de enviar un pedido nuevo."),
+                        expected_status="interpreting")
                 return store_no_write(path, request_id, body_hash, no_write(payload,
                     "No pude interpretar Mercado · no cambié nada. Intenta la solicitud completa de nuevo.",
                     "¿Puedes volver a dictar los productos y sus cantidades?"), expected_status="interpreting")

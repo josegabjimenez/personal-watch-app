@@ -18,11 +18,12 @@ import unicodedata
 from typing import Any
 from urllib import request
 
+from grocery_ai_budget import GroceryAIBudget
 from grocery_item_parser import MAX_ITEMS, MAX_ITEM_LENGTH, MAX_TEXT_LENGTH
 
 
 OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
-DEFAULT_MODEL = "gpt-5-mini"
+DEFAULT_MODEL = "gpt-6-luna"
 MAX_CATALOG_ITEMS = 200
 MAX_CATALOG_TEXT_CHARS = 1800
 MAX_INPUT_BYTES = 60_000
@@ -31,7 +32,6 @@ MAX_OUTPUT_TOKENS = 3000
 MAX_KEY_FILE_BYTES = 4096
 MAX_QUESTION_CHARS = 240
 _TRANSPORT_SLOTS = threading.BoundedSemaphore(4)
-_MODEL = re.compile(r"[A-Za-z0-9._:-]{1,120}\Z")
 _ID = re.compile(r"[A-Za-z0-9_-]{1,128}\Z")
 _KEY = re.compile(r"[A-Za-z0-9_.:-]{1,2048}\Z")
 _DESTINATION = r"(?:al\s+mercado|a\s+(?:la|mi)\s+lista\s+de(?:l)?\s+(?:mercado|compras))"
@@ -192,7 +192,7 @@ def config_from_environment() -> GroceryAIConfig | None:
     if os.environ.get("GROCERY_AI_ENABLED") != "1":
         return None
     model = os.environ.get("GROCERY_AI_MODEL", DEFAULT_MODEL)
-    if not _MODEL.fullmatch(model):
+    if model != DEFAULT_MODEL:
         raise InterpretationUnavailable("invalid_interpreter_model")
     try:
         timeout = float(os.environ.get("GROCERY_AI_TIMEOUT_SECONDS", "8"))
@@ -421,13 +421,19 @@ def _validate_proposal(value: Any, text: str, catalog: list[dict[str, Any]]) -> 
 
 
 def interpret(text: str, catalog: list[dict[str, Any]], *, api_key: str,
-              model: str = DEFAULT_MODEL, timeout: float = 8) -> dict[str, Any]:
-    """Obtain one strictly validated proposal, with no retry or parser fallback."""
+              budget: GroceryAIBudget | None = None, request_id: str | None = None,
+              payload_hash: str | None = None, model: str = DEFAULT_MODEL,
+              timeout: float = 8) -> dict[str, Any]:
+    """Admit one budgeted model attempt and validate its whole proposal.
+
+    A timeout, unknown charge, or uncertain settlement keeps the reservation.
+    There is no retry, late settlement callback, or parser fallback.
+    """
     if not _plain_text(text, MAX_TEXT_LENGTH):
         raise InterpretationUnavailable("invalid_capture_text")
     if not isinstance(api_key, str) or not _KEY.fullmatch(api_key):
         raise InterpretationUnavailable("interpreter_not_configured")
-    if not isinstance(model, str) or not _MODEL.fullmatch(model):
+    if model != DEFAULT_MODEL:
         raise InterpretationUnavailable("invalid_interpreter_model")
     if not _valid_timeout(timeout):
         raise InterpretationUnavailable("invalid_interpreter_timeout")
@@ -437,11 +443,34 @@ def interpret(text: str, catalog: list[dict[str, Any]], *, api_key: str,
     if len(data.encode("utf-8")) > MAX_INPUT_BYTES:
         raise InterpretationUnavailable("interpreter_input_too_large")
     body = json.dumps({
-        "model": model, "reasoning": {"effort": "low"}, "store": False,
+        "model": DEFAULT_MODEL, "service_tier": "default",
+        "prompt_cache_options": {"mode": "implicit", "ttl": "30m"},
+        "reasoning": {"effort": "low"}, "store": False,
         "tools": [], "max_output_tokens": MAX_OUTPUT_TOKENS,
         "instructions": SYSTEM_INSTRUCTIONS, "input": data,
         "text": {"format": {"type": "json_schema", "name": "grocery_interpretation",
                             "strict": True, "schema": GROCERY_SCHEMA}},
     }, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")
+    if not isinstance(budget, GroceryAIBudget):
+        raise InterpretationUnavailable("grocery_ai_budget_unavailable")
+    try:
+        admission = budget.reserve(request_id, payload_hash, max_output_tokens=MAX_OUTPUT_TOKENS)
+    except Exception:
+        raise InterpretationUnavailable("grocery_ai_budget_unavailable") from None
+    if not admission.allowed:
+        code = ("grocery_ai_budget_exhausted" if admission.reason == "monthly_budget_exhausted"
+                else "grocery_ai_budget_unavailable")
+        raise InterpretationUnavailable(code)
+    if not admission.fresh:
+        raise InterpretationUnavailable("grocery_ai_budget_duplicate")
     response = _bounded_post(body, api_key, float(timeout))
+    # Settle known usage even when the output is refused, incomplete, or invalid.
+    # The budget verifies the response identity and accounting independently.
+    try:
+        budget.settle(request_id, payload_hash, response)
+    except Exception:
+        raise InterpretationUnavailable("grocery_ai_budget_unavailable") from None
+    if (not isinstance(response, dict) or response.get("model") != DEFAULT_MODEL
+            or response.get("service_tier") != "default"):
+        raise InterpretationUnavailable("interpreter_invalid_response_identity")
     return _validate_proposal(_parse_response(response), text, candidates)

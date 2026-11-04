@@ -27,13 +27,13 @@ BASELINE_SHA256 = "f6eae64baaec83a04439919b9ffe54f49f4330ae60cbe55d54412e3e04041
 EXTERNAL_HELPER_SHA256 = "24be164879b114487516b85b6811cce8239a4ad0744ec1e36bfc575a75a8e7e0"
 OVERLAY_SHA256 = "2c6e4a775cb599436c829507b650acb681351697bbb19c32c2fbeb8c71d1c441"
 SERVER = "mobile_capture_staging_server.py"
-RUNTIME_MODULES = ("grocery_capture.py", "grocery_helper_adapter.py", "grocery_item_parser.py", "grocery_ai.py")
+RUNTIME_MODULES = ("grocery_capture.py", "grocery_helper_adapter.py", "grocery_item_parser.py", "grocery_ai_budget.py", "grocery_ai.py")
 ARTIFACTS = (SERVER, *RUNTIME_MODULES)
 STDLIB_IMPORTS = frozenset({
     "__future__", "argparse", "contextlib", "dataclasses", "datetime", "decimal",
     "hashlib", "hmac", "http", "importlib", "json", "math", "os", "pathlib",
     "queue", "re", "sqlite3", "stat", "subprocess", "sys", "threading", "time",
-    "typing", "unicodedata", "urllib", "zoneinfo",
+    "typing", "unicodedata", "urllib", "uuid", "zoneinfo",
 })
 
 
@@ -83,7 +83,7 @@ def overlay_server(source: bytes, overlay: bytes) -> bytes:
 
 def assert_import_closure(runtime: dict[str, bytes]) -> None:
     if set(runtime) != set(ARTIFACTS):
-        raise ValueError("Release must contain exactly the five grocery runtime files")
+        raise ValueError("Release must contain exactly the six grocery runtime files")
     allowed = STDLIB_IMPORTS | {Path(name).stem for name in ARTIFACTS}
     for name, source in runtime.items():
         for node in ast.walk(ast.parse(source)):
@@ -114,14 +114,14 @@ def candidate(source: bytes, repo: Path = ROOT) -> tuple[dict, dict[str, bytes]]
         raise ValueError("Unexpected external helper fingerprint")
     manifest = {
         "format_version": 1,
-        "scope": "Historical grocery-only AI candidate; original server gates and unrelated functions unchanged",
+        "scope": "Historical grocery-only Luna AI with persistent USD2 monthly guard; original server gates and unrelated functions unchanged",
         "baseline_sha256": BASELINE_SHA256,
         "overlay_sha256": digest(overlay),
         "external_helper_sha256": EXTERNAL_HELPER_SHA256,
         "runtime_file_count": len(ARTIFACTS),
         "artifacts": {name: digest(runtime[name]) for name in sorted(runtime)},
         "journal_suffix": ".grocery.sqlite3",
-        "activation": "Build/review only; AI remains disabled unless separately configured; no installer or deployment included",
+        "activation": "Jose authorized grocery-only Luna/USD2 rollout; explicit budget initialization and private server key required",
         "rollback": "Retain compatible frozen batch/item state; never replay uncertain work or restore one database independently",
     }
     return manifest, runtime
@@ -151,7 +151,7 @@ def verify_release(output: Path, expected_manifest: dict | None = None) -> dict:
     if output.is_symlink() or not output.is_dir():
         raise ValueError("Release must be an ordinary directory")
     if sorted(item.name for item in output.iterdir()) != sorted((*ARTIFACTS, "manifest.json")):
-        raise ValueError("Release must contain exactly five runtime files and its manifest")
+        raise ValueError("Release must contain exactly six runtime files and its manifest")
     for name in (*ARTIFACTS, "manifest.json"):
         path = output / name
         if path.is_symlink() or not path.is_file():

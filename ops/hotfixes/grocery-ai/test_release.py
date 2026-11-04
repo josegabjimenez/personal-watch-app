@@ -37,25 +37,28 @@ _legacy = _legacy_tests()
 
 
 class HistoricalGroceryAIReleaseTests(_legacy.HistoricalMultiItemReleaseTests):
-    """Inherited safety cases execute this five-file package with AI disabled."""
+    """Inherited safety cases execute this six-file package with AI disabled."""
 
     test_actual_package_uses_only_four_pinned_runtime_files_and_no_held_imports = None
 
     def setUp(self):
-        original = sys.modules.get("grocery_ai")
+        original = {name: sys.modules.get(name) for name in ("grocery_ai", "grocery_ai_budget")}
         def restore_ai():
-            if original is None:
-                sys.modules.pop("grocery_ai", None)
-            else:
-                sys.modules["grocery_ai"] = original
+            for name, module in original.items():
+                if module is None:
+                    sys.modules.pop(name, None)
+                else:
+                    sys.modules[name] = module
         self.addCleanup(restore_ai)
         super().setUp()
 
     def restart(self):
-        for name in ("grocery_item_parser", "grocery_ai", "grocery_helper_adapter", "grocery_capture"):
+        for name in ("grocery_item_parser", "grocery_ai_budget", "grocery_ai", "grocery_helper_adapter", "grocery_capture"):
             module = _legacy.load_module(name, self.release / (name + ".py"))
             if name == "grocery_ai":
                 self.ai = module
+            elif name == "grocery_ai_budget":
+                self.budget_module = module
             elif name == "grocery_helper_adapter":
                 self.adapter = module
                 self.stack.enter_context(mock.patch.object(module, "PINNED_HELPER_SHA256",
@@ -68,6 +71,9 @@ class HistoricalGroceryAIReleaseTests(_legacy.HistoricalMultiItemReleaseTests):
             write_domains=frozenset({"aura.grocery_capture"}), aura_helper=self.helper)
 
     def enable_ai(self):
+        journal = self.engine.journal_path(self.cfg.ledger_path)
+        self.engine.init_db(journal)
+        self.budget_module.initialize_schema(journal)
         key_file = self.case / "synthetic-provider-key"
         key_file.write_text("synthetic-grocery-key")
         key_file.chmod(0o600)
@@ -79,7 +85,11 @@ class HistoricalGroceryAIReleaseTests(_legacy.HistoricalMultiItemReleaseTests):
         return {"decision": decision, "question": question, "items": [] if items is None else items}
 
     def synthetic_provider(self, proposal):
-        response = {"status": "completed", "output": [{"type": "message", "role": "assistant", "status": "completed",
+        response = {"status": "completed", "model": "gpt-6-luna", "service_tier": "default",
+            "usage": {"input_tokens": 1200, "output_tokens": 200, "total_tokens": 1400,
+                      "input_tokens_details": {"cached_tokens": 0, "cache_write_tokens": 0},
+                      "output_tokens_details": {"reasoning_tokens": 150}},
+            "output": [{"type": "message", "role": "assistant", "status": "completed",
             "content": [{"type": "output_text", "text": json.dumps(proposal, ensure_ascii=False)}]}]}
         return mock.patch.object(self.ai, "_post_json", return_value=response)
 
@@ -97,9 +107,9 @@ class HistoricalGroceryAIReleaseTests(_legacy.HistoricalMultiItemReleaseTests):
         self.assertNotIn("confirmation", response)
         self.assertNotIn("operation_id", response)
 
-    def test_actual_package_uses_only_five_grocery_runtime_files_and_no_held_imports(self):
+    def test_actual_package_uses_only_six_grocery_runtime_files_and_no_held_imports(self):
         self.assertEqual(sorted(path.name for path in self.release.iterdir()), sorted((*build.ARTIFACTS, "manifest.json")))
-        self.assertEqual(self.expected["runtime_file_count"], 5)
+        self.assertEqual(self.expected["runtime_file_count"], 6)
         build.verify_release(self.release, self.expected)
         self.assertEqual(self.expected["baseline_sha256"], build.BASELINE_SHA256)
         self.assertEqual(self.expected["external_helper_sha256"], _legacy.contract.ORIGINAL_SHA256)
@@ -135,6 +145,14 @@ class HistoricalGroceryAIReleaseTests(_legacy.HistoricalMultiItemReleaseTests):
         self.assertEqual(code, 200)
         self.assert_swift_wire(response, wrote=True)
         self.assertEqual(provider.call_count, 1)
+        sent = json.loads(provider.call_args.args[0])
+        self.assertEqual(sent["model"], "gpt-6-luna")
+        self.assertEqual(sent["service_tier"], "default")
+        self.assertEqual(sent["reasoning"], {"effort": "low"})
+        self.assertEqual(sent["prompt_cache_options"], {"mode": "implicit", "ttl": "30m"})
+        snapshot = self.budget_module.GroceryAIBudget(self.engine.journal_path(self.cfg.ledger_path)).snapshot()
+        self.assertEqual(snapshot.reserved_nanodollars, 0)
+        self.assertEqual(snapshot.charged_nanodollars, 1200 * 300 + 200 * 1000)
         self.assertEqual(response["external_ids"]["item_count"], 3)
         self.assertEqual(response["external_ids"]["already_present"], 1)
         self.assertEqual(response["external_ids"]["created"], 2)
@@ -189,6 +207,34 @@ class HistoricalGroceryAIReleaseTests(_legacy.HistoricalMultiItemReleaseTests):
         self.assertEqual(response["external_ids"]["notion_block_ids"], ["synthetic-lactose-free"])
         self.assertEqual(len(self.fake.writes), 0)
         self.assertEqual(provider.call_count, 1)
+
+    def test_actual_historical_package_budget_exhaustion_is_terminal_no_write(self):
+        self.enable_ai()
+        guard = self.budget_module.GroceryAIBudget(self.engine.journal_path(self.cfg.ledger_path))
+        for index in range(6):
+            self.assertTrue(guard.reserve(f"synthetic-prior-unknown-{index}", "a" * 64).allowed)
+        with mock.patch.object(self.ai, "_post_json", side_effect=AssertionError("exhausted budget posted")) as post:
+            code, response = self.invoke()
+            replay_code, replay = self.invoke()
+        self.assertEqual(code, 200)
+        self.assert_swift_wire(response, wrote=False)
+        self.assertIn("USD 2/mes", response["display_message"])
+        self.assertEqual((replay_code, replay["display_message"]), (200, response["display_message"]))
+        self.assertEqual(self.fake.writes, [])
+        post.assert_not_called()
+
+    def test_no_request_initializes_missing_budget_state_in_actual_package(self):
+        self.enable_ai()
+        journal = self.engine.journal_path(self.cfg.ledger_path)
+        with sqlite3.connect(journal) as conn:
+            conn.execute("DROP TABLE grocery_ai_budget_requests")
+        with mock.patch.object(self.ai, "_post_json", side_effect=AssertionError("missing guard posted")) as post:
+            code, response = self.invoke()
+        self.assertEqual(code, 200)
+        self.assert_swift_wire(response, wrote=False)
+        self.assertIn("Presupuesto", response["display_message"])
+        self.assertEqual(self.fake.writes, [])
+        post.assert_not_called()
 
     def test_ai_bought_candidate_cannot_reactivate_or_partially_apply(self):
         self.enable_ai()
