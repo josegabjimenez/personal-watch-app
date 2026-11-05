@@ -4,7 +4,7 @@ Personal Watch App is a Watch-first iOS/watchOS capture app for quick Apple Watc
 
 The personal MVP contains three actions on iPhone and Apple Watch: **Mercado**, **Recordatorio**, and **Gasto**. It reuses the synchronous BFF, signed requests, and durable outbox.
 
-See [AI/Todoist reminder configuration and verification](docs/REMINDER_AI_TODOIST.md), [the current MVP contract and device handoff](docs/PERSONAL_WATCH_APP_MVP.md), [rename verification](docs/verification/2026-10-28/REPORT.md), and [earlier MVP verification](docs/verification/2026-10-25/REPORT.md). Older status/review documents below are historical evidence and do not certify this candidate.
+See [the resumed reminder package and verification](docs/verification/2026-11-05/REMINDER_RESUME.md), [AI/Todoist reminder configuration and verification](docs/REMINDER_AI_TODOIST.md), [the current MVP contract and device handoff](docs/PERSONAL_WATCH_APP_MVP.md), [rename verification](docs/verification/2026-10-28/REPORT.md), and [earlier MVP verification](docs/verification/2026-10-25/REPORT.md). Older status/review documents below are historical evidence and do not certify this candidate.
 
 ## Current scope
 

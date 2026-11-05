@@ -8,6 +8,7 @@ from __future__ import annotations
 import copy
 import fcntl
 import hashlib
+import importlib.util
 import io
 import json
 import os
@@ -141,7 +142,13 @@ class InstallReleaseTests(unittest.TestCase):
         cls.root = Path(cls.temp.name)
         cls.baseline = build.baseline_source(ROOT)
         cls.package = cls.root / 'sealed-package'
-        build.build_release(cls.baseline, cls.package, ROOT)
+        fixture_path = Path(__file__).with_name('test_fixture.py')
+        spec = importlib.util.spec_from_file_location('_grocery_installer_source_fixture', fixture_path)
+        source_fixture = importlib.util.module_from_spec(spec)
+        exec(compile(fixture_path.read_bytes(), str(fixture_path), 'exec'), source_fixture.__dict__)
+        cls.snapshot = cls.root / 'historical-source'
+        source_fixture.populate_snapshot(ROOT, cls.snapshot, build.RUNTIME_MODULES)
+        build.build_release(cls.baseline, cls.package, cls.snapshot)
         cls.manifest = json.loads((cls.package / 'manifest.json').read_bytes())
 
     def setUp(self):

@@ -37,15 +37,16 @@ def load_module(name, path):
     return module
 
 
+source_fixture = load_module("_historical_grocery_source_fixture", Path(__file__).with_name("test_fixture.py"))
+
+
 class HistoricalMultiItemReleaseTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.temp = tempfile.TemporaryDirectory()
         cls.directory = Path(cls.temp.name)
         cls.snapshot = cls.directory / "snapshot"
-        (cls.snapshot / "backend").mkdir(parents=True)
-        for name in build.RUNTIME_MODULES:
-            shutil.copyfile(ROOT / "backend" / name, cls.snapshot / "backend" / name)
+        source_fixture.populate_snapshot(ROOT, cls.snapshot, build.RUNTIME_MODULES)
         cls.baseline = build.baseline_source(ROOT)
         # A test-local explicit candidate manifest does not seal repository pins.
         cls.expected, _ = build.candidate(cls.baseline, cls.snapshot)

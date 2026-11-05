@@ -1,5 +1,7 @@
 # Historical grocery multi-item release and guarded initial activation
 
+Integration note (November 5): this is the historical **four-file** package. Its sealed source inputs remain at revision `1fe67948051f1d25140e13900d51275c498e0770`; tests use that exact fixture after the combined backend gains grocery AI imports. Do not reseal it from current six-file source or rerun its installer on the accepted six-file deployment. Use the separately reviewed six-file or reminder package for those baselines.
+
 This package extends the exact deployed BFF whose SHA256 is
 `f6eae64baaec83a04439919b9ffe54f49f4330ae60cbe55d54412e3e04041c38`.
 It does not contain the current full MVP backend, financial confirmation flow,
