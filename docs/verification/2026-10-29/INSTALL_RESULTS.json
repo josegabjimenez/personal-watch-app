@@ -1,0 +1,43 @@
+{
+  "date": "2026-10-29",
+  "timezone": "America/Bogota",
+  "scope": "Physical Watch installation diagnostics; no backend changes",
+  "collection": {
+    "human_command_completed": true,
+    "filtered_display_entries": 0,
+    "attached_device_predicate_ignored": true,
+    "raw_archive_scope": "broader than intended; private and not broadly inspected",
+    "helper_disabled": true,
+    "capture_window_did_not_include_Oct25_failure": true
+  },
+  "fresh_phone_console": {
+    "view_filter": "existing app bundle prefix",
+    "observed_at": "2026-10-29T11:39:33-05:00",
+    "matching_messages": 17,
+    "paused_after_attempt": true,
+    "transfer_completed": true,
+    "installer_error_domain": "MIInstallerErrorDomain",
+    "installer_error_code": 111,
+    "wrapper_errors": [
+      "ACXErrorDomain17",
+      "IXUserPresentableErrorDomain1"
+    ],
+    "reason": "The free-provisioned Watch bundle was rejected for this companion installation source."
+  },
+  "current_ui": {
+    "correct_renamed_Xcode_project_opened": true,
+    "Device_Hub_opened": true,
+    "iPhone": "USB wired/paired/connected, developer services available",
+    "Watch": "listed, currently unavailable to Mac; developer pairing sheet waiting",
+    "Watch_installed_version": "unverified",
+    "Watch_launch": "unverified",
+    "Watch_scheme": "PersonalWatchAppWatch",
+    "physical_Watch_destination_selected": true,
+    "Watch_signed_build": "passed; display Personal Watch App, legacy bundle ID preserved, original actual signing certificate reused",
+    "Xcode_Run_install": "failed before installation: CoreDevice4000/RemotePairing1035 Bluetooth connection rejection",
+    "Watch_pairing": "Device Hub waiting; human reports Mac/pairing entry visible on Watch"
+  },
+  "next_step": "Use existing Personal Team and supported Device Hub pairing, then Xcode Run for physical Watch. No inference that paid membership is required.",
+  "secrets_or_device_identifiers_published": false,
+  "source_changes": "documentation only; no implementation or backend change"
+}

@@ -1,0 +1,209 @@
+{
+  "base_commit": "970e14dfd6d3788996135a933cc0909c3049f076",
+  "recovered_candidate_manifest_sha256": "a07562867cd5cf9639778093419bffd864f4c67f0efd4f079b6a90a6bb5ca1c6",
+  "recovered_edited_test_sha256": "6bd0c98a28c0ab150fbba70fa3f4f9ced828451102bca7792b60b87e21d038c4",
+  "provenance": "New reconciliation of recovered September 5 candidate with canonical main; not correlated to historical 9b0b397a bundle.",
+  "implementation_sources": [
+    {
+      "path": ".env.example",
+      "sha256": "9edb7a003f64a8eb5166919dcc4adfc44328f1170d418cbd252cef07e9853c14"
+    },
+    {
+      "path": "apple/HermesCapture/Apps/Shared/HermesAppRuntime.swift",
+      "sha256": "eb93984a10c4dc726c2e0b6ce8c1b5a154eb37fe765ae08caf0fcff7532485f3"
+    },
+    {
+      "path": "apple/HermesCapture/Apps/Shared/HermesCaptureAppIntents.swift",
+      "sha256": "7be9bde04740060f3b21d3d24591c7818b61b49cb1c396dd6ba4d5e92d05499b"
+    },
+    {
+      "path": "apple/HermesCapture/Apps/Shared/HermesCaptureDefaults.swift",
+      "sha256": "b1ceeab3af8a85b2164814d75346948874b96eebb0d8ba6160990d0c2a9910f9"
+    },
+    {
+      "path": "apple/HermesCapture/Apps/Shared/PrivacyInfo.xcprivacy",
+      "sha256": "8459fb6681c51342e1343518bd18f81bdac42be3ba01bf51e1c4a485039190a6"
+    },
+    {
+      "path": "apple/HermesCapture/Apps/Shared/WatchBootstrapMessage.swift",
+      "sha256": "e239580bd3503d37d0ac88c4a1908cf37dc8168e67809f14e50646076c1bdf24"
+    },
+    {
+      "path": "apple/HermesCapture/Apps/Watch/HermesCaptureWatchApp.swift",
+      "sha256": "2de89b873af057273938afca0bb9cf2316c0de008486fe89a114cefcb5e988a5"
+    },
+    {
+      "path": "apple/HermesCapture/Apps/Watch/WatchBootstrapReceiver.swift",
+      "sha256": "444af0ba4f00fa8d8252588923ebb17a4ec108760a88b5b9eaf3d52e398e740c"
+    },
+    {
+      "path": "apple/HermesCapture/Apps/Watch/WatchCaptureDeliveryCoordinator.swift",
+      "sha256": "9a5b33363ca9a8ef3b4aa2addd7ee4921519b28e3d469cc72ee836b4c1016ef3"
+    },
+    {
+      "path": "apple/HermesCapture/Apps/Watch/WatchCaptureView.swift",
+      "sha256": "9d510891ac38a34aa0527156cc3bd9f075c7d4b6d7b1bfae3b25de64aa873b8d"
+    },
+    {
+      "path": "apple/HermesCapture/Apps/Watch/WatchContentView.swift",
+      "sha256": "93cdad63b146e4cae26b38578d54a1ca1fd27bba0f83abba21bfdbe459a78d29"
+    },
+    {
+      "path": "apple/HermesCapture/Apps/Watch/WatchHistoryView.swift",
+      "sha256": "c4adeb523077f61f7ca8f6784c413aa588abffad60b082c9717ecc4ee6e40053"
+    },
+    {
+      "path": "apple/HermesCapture/Apps/iOS/HermesCaptureiOSApp.swift",
+      "sha256": "56b37f00ca300a7e8694a12fbfadeb8a1bc604c1254244e340099721d108c463"
+    },
+    {
+      "path": "apple/HermesCapture/Apps/iOS/IOSCaptureView.swift",
+      "sha256": "4b0c20c7bab200ffb054b28a79a95321ea757c7c434e042bde7b75acfcd0cc80"
+    },
+    {
+      "path": "apple/HermesCapture/Apps/iOS/IOSContentView.swift",
+      "sha256": "bf8886200ffbf570af8bad7b9d04d21c0b3f17f8a2b521e5741fdc2f78b51374"
+    },
+    {
+      "path": "apple/HermesCapture/Apps/iOS/IPhoneWatchBootstrapCoordinator.swift",
+      "sha256": "476bb7715b0d2ec89ded4fa69ea787fa74a5a88e38cc4b954a1307609781dd4a"
+    },
+    {
+      "path": "apple/HermesCapture/Config/Signing.xcconfig",
+      "sha256": "35bbd1b7c0824076d14e9c56cebff50888555961d8b3bfc647b21de050b0db02"
+    },
+    {
+      "path": "apple/HermesCapture/Packages/HermesCore/Package.swift",
+      "sha256": "c23a1349d676b393afab7626a75466a65fb634ef2b9dc79acf672a34e4c30e22"
+    },
+    {
+      "path": "apple/HermesCapture/Packages/HermesCore/Sources/HermesCore/CaptureEntities.swift",
+      "sha256": "4de5906bdbd700789cf00c0160507fd236ec081cb18cc6fabdbfb776e7016c05"
+    },
+    {
+      "path": "apple/HermesCapture/Packages/HermesCore/Sources/HermesCore/CapturePayloadV1.swift",
+      "sha256": "f5528dd09dcd8a84cc012aec2e7947efec7d2eb1ca7631c4fbc17e501f77c9a3"
+    },
+    {
+      "path": "apple/HermesCapture/Packages/HermesCore/Sources/HermesCore/CaptureResponseV1.swift",
+      "sha256": "b4daec635b099b63e065ad2bac777d45fe9ad0c31b5feb739d900d8f84e62fe6"
+    },
+    {
+      "path": "apple/HermesCapture/Packages/HermesCore/Sources/HermesCore/CaptureRoute.swift",
+      "sha256": "ea5b312f5869e5ae2f8fc63ef21dbf3df0438bb9e108eb74964c528a75dcb5ea"
+    },
+    {
+      "path": "apple/HermesCapture/Packages/HermesCore/Sources/HermesCore/Configuration.swift",
+      "sha256": "28954f067d9586a6243e952e1f712f06c5e0a3625d7f0d6a95ec1cb73fd84a17"
+    },
+    {
+      "path": "apple/HermesCapture/Packages/HermesCore/Sources/HermesCore/EndpointValidator.swift",
+      "sha256": "4318afa64a01014ca32260cb7f9b2862154bdf5742e92c6af381c3e9f8576232"
+    },
+    {
+      "path": "apple/HermesCapture/Packages/HermesCore/Sources/HermesCore/HMACSigner.swift",
+      "sha256": "704a6e65c8dbcf2daac95cff605ccce712d5f8861126d4207e009a6a0d14e382"
+    },
+    {
+      "path": "apple/HermesCapture/Packages/HermesCore/Sources/HermesCore/KeychainRouteSecretStore.swift",
+      "sha256": "03950b79d10cdfe79fd0ae184326309a05f1aa89a86abcfcde8a7c5b08db3755"
+    },
+    {
+      "path": "apple/HermesCapture/Packages/HermesCore/Sources/HermesCore/OutboxDeliveryService.swift",
+      "sha256": "1046e369058d650d28310ea39a8c6f5540a73405d63a98a6e4342385d0a414c7"
+    },
+    {
+      "path": "apple/HermesCapture/Packages/HermesCore/Sources/HermesCore/OutboxStore.swift",
+      "sha256": "b7832492ed9b56023eb9b711680dcfcf69b6ff5dd74758124c88da9f406e970c"
+    },
+    {
+      "path": "apple/HermesCapture/Packages/HermesCore/Sources/HermesCore/QuickAction.swift",
+      "sha256": "aeaac352d1845998ded18828cf06aec6dba40c9d78428c58c1c5f1568332c391"
+    },
+    {
+      "path": "apple/HermesCapture/Packages/HermesCore/Sources/HermesCore/WebhookClient.swift",
+      "sha256": "f06918d1b7399d64b7c12679db635d34ef81500d57ea51c9d53d6c4efab544ad"
+    },
+    {
+      "path": "apple/HermesCapture/Packages/HermesCore/Sources/HermesCore/WebhookHeaders.swift",
+      "sha256": "b4411f441ffb2a0bf60084e1c5cad4b44a891f5fedb984dc4298c7f16fffe480"
+    },
+    {
+      "path": "apple/HermesCapture/Packages/HermesCore/Tests/HermesCoreTests/HermesCoreTests.swift",
+      "sha256": "4382a756bbe7e566e675b73a2744440252ffcedf6784b1602e3b5edc33b7fe79"
+    },
+    {
+      "path": "apple/HermesCapture/Packages/HermesCore/Tests/HermesCoreTests/OutboxDeliveryServiceTests.swift",
+      "sha256": "9a9073690cc1f61598032c64d24f8e245aea16ea869b4cf6d139a6c675833643"
+    },
+    {
+      "path": "apple/HermesCapture/Packages/HermesCore/Tests/HermesCoreTests/OutboxSafetyTests.swift",
+      "sha256": "97b123a445da1663b656e89e99c93ae1c8177441d1b27b508251f08d11f430c9"
+    },
+    {
+      "path": "apple/HermesCapture/Tests/Host/HermesCoreTestHost.swift",
+      "sha256": "f170907698f67be50c3ddb1d8ba720484f2b35264182e0c2694196ad4c19ec0a"
+    },
+    {
+      "path": "apple/HermesCapture/UITests/HermesCaptureUITests.swift",
+      "sha256": "dc3fac1308712490ea15639c2b27440c7a370489fbbd4671ba7d0e7b43f821e9"
+    },
+    {
+      "path": "apple/HermesCapture/project.yml",
+      "sha256": "bddf82aa6c2c6e26a160e0714593d03f0b13639a99bf72b1ac480b0a150e8990"
+    },
+    {
+      "path": "backend/fixtures/aura-reminder-simple.json",
+      "sha256": "46e17ed1ad4ab6a080ac73a6d3e8901267a19a7b1d103cb9248a97cfed381e1a"
+    },
+    {
+      "path": "backend/fixtures/invalid-event.json",
+      "sha256": "9481a607164fbaab7d1006c519387e1a23a4ef782fd463578d25008830969a08"
+    },
+    {
+      "path": "backend/fixtures/megan-expense-simple.json",
+      "sha256": "ed21ae581550393d4d39165c551f037b906053b169a25e6ea2bf24b7595badca"
+    },
+    {
+      "path": "backend/mobile-capture-v1-webhook-prompt.md",
+      "sha256": "b77008525271d1876db7c98f173cca718f94470f87803d6c951b05d978ff2076"
+    },
+    {
+      "path": "backend/mobile_capture_staging_server.py",
+      "sha256": "c2e4b467b4283b964f925b6618702694605b18d886a94e15164fd5b9f665a502"
+    },
+    {
+      "path": "backend/scripts/mobile_expense_capture.py",
+      "sha256": "9b7eb758bffa1e9620d4cc0b043f24cec6455ec134197db02525819580aee0f3"
+    },
+    {
+      "path": "backend/scripts/sign_and_post_mobile_capture.py",
+      "sha256": "6366e51ae77378612b5308fb12461a89c5e9d350c4ea576bfa8b8eeeab6b2d44"
+    },
+    {
+      "path": "backend/systemd/hermes-mobile-capture.service.example",
+      "sha256": "e4d39adcabfd65b996b508618c0b411e8a8e4372e5e042983e0991506cc43c5d"
+    },
+    {
+      "path": "backend/tests/test_mobile_capture_staging_server.py",
+      "sha256": "15f0062c39d23481fd39f238cfd1c1dbe46fb93e16cfea032ba6de5cb6d1de9b"
+    },
+    {
+      "path": "backend/tests/test_mobile_expense_capture.py",
+      "sha256": "3ea3e3149f83152bc592224495018eb407e065ef1e0618b8fb78da0a0a2f4c08"
+    },
+    {
+      "path": "backend/tests/test_mvp_regressions.py",
+      "sha256": "d5e516385d52ea1dc99190f47f084a113faff44230d157b296211b6191fbe0b0"
+    },
+    {
+      "path": "scripts/freeze_mvp_candidate.py",
+      "sha256": "34991c5d53baddcd3d8c270b01dc6d08d6ef7a7267429b5b5c0322ad0742970e"
+    },
+    {
+      "path": "scripts/verify_mvp.sh",
+      "sha256": "c07383ea2b82479622c49592ea3bebe2a84a912a65e8bd5a7f03298735eec412"
+    }
+  ],
+  "schema_version": 1
+}

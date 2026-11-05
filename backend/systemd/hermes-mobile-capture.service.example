@@ -1,0 +1,58 @@
+# Public-safe example; copy and adapt outside the repository.
+# Legacy unit filename, service account, paths and state directory deliberately
+# match the existing backend. The app rebrand does not migrate live services.
+# The referenced environment and secret files must be readable only by the
+# service account (or by root before systemd drops privileges).
+[Unit]
+Description=Personal Watch App mobile capture BFF with durable side-effect claims
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=hermes
+Group=hermes
+WorkingDirectory=/opt/hermes-watch-siri-ai
+EnvironmentFile=/etc/hermes/mobile-capture-write.env
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/usr/bin/python3 /opt/hermes-watch-siri-ai/backend/mobile_capture_staging_server.py \
+  --host 127.0.0.1 \
+  --port 8650 \
+  --secret-file /etc/hermes/mobile-capture-v1-secret.txt \
+  --ledger /var/lib/hermes-mobile-capture/mobile_capture_ledger.sqlite \
+  --aura-helper /opt/hermes-watch-siri-ai/runtime/apple_watch_capture.py \
+  --expense-helper /opt/hermes-watch-siri-ai/backend/scripts/mobile_expense_capture.py
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=15
+UMask=0077
+
+# The SQLite file contains request, expense and reminder-operation claims.
+# Preserve the database and reminder-lock directory across restarts. Reminder
+# plans, account binding, command UUIDs and task receipts must never be reset.
+# The ledger and Aura helper state are the only writable service locations.
+# The external Aura grocery helper is not bundled. Review its official-list,
+# request-ID replay and state contract before enabling groceries. Reminder uses
+# the bundled direct adapter; see docs/REMINDER_AI_TODOIST.md for private key
+# files, bounded model configuration and separate rollout/device gates.
+StateDirectory=hermes-mobile-capture
+StateDirectoryMode=0700
+ReadWritePaths=/var/lib/hermes-mobile-capture
+
+# Firefly credentials stay in private service configuration. The Watch never
+# receives them. New writes remain disabled until exact domain gates are set.
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+LockPersonality=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

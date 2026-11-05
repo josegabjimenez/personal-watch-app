@@ -1,5 +1,7 @@
 # App Intents and Siri dry-run capture
 
+> **Historical record.** This document retains the earlier app name and its recorded candidate or planning stage. The current app is **Personal Watch App**; use [the current three-action MVP](PERSONAL_WATCH_APP_MVP.md) and [device setup](XCODE_DEVICE_SETUP.md) for current scope and readiness.
+
 **Status:** general-capture App Intent verified through manual Shortcut and Siri on physical iPhone, plus native Siri execution on physical Apple Watch. The historical simulator Auto Shortcuts regression remains simulator-only.
 
 ## Verified iPhone Shortcut result — 2026-07-20 America/Bogota

@@ -1,5 +1,7 @@
 # Implementation tickets — Draft v3
 
+> **Historical record.** This document retains the earlier app name and its recorded candidate or planning stage. The current app is **Personal Watch App**; use [the current three-action MVP](PERSONAL_WATCH_APP_MVP.md) and [device setup](XCODE_DEVICE_SETUP.md) for current scope and readiness.
+
 ## EPIC 0 — Fable 5 and server staging
 
 ### T0.1 Approve architecture gates

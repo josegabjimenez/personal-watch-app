@@ -1,0 +1,40 @@
+{
+  "date": "2026-10-25",
+  "timezone": "America/Bogota",
+  "xcode": "27.0 (27A5237l)",
+  "sdk_versions": {
+    "iOS": "27.0",
+    "watchOS": "27.0"
+  },
+  "checks": {
+    "backend": {
+      "passed": 104,
+      "failed": 0
+    },
+    "swift_package": {
+      "passed": 58,
+      "failed": 0
+    },
+    "ios_simulator_core": {
+      "passed": 58,
+      "failed": 0
+    },
+    "ios_simulator_ui": {
+      "passed": 8,
+      "failed": 0
+    },
+    "ios_release_unsigned_build": "passed",
+    "watchos_release_unsigned_build": "passed",
+    "watch_simulator_synthetic_home": "visually verified",
+    "configured_signed_archive": "requires development team for both product targets",
+    "physical_install_siri_notification": "not run",
+    "external_aura_helper": "not available in reviewed source"
+  },
+  "log_sha256": {
+    "backend-final.log": "44b364d820b9738fdd6e87929d348e15a5c63c2105d5922bb5caa20012c2d394",
+    "ios-integrated-final-tests.log": "2b590f378eb1973c64e5be1de522f9ec20e674c351998c0a2f5584fce25f006f",
+    "ios-final-release-build.log": "ec2cc1809a8da602229c71761d874cb58f4352360a1f3dbf00d8577b88b5d41c",
+    "watch-final-release-build.log": "92514d1a7b0b64feb9bc60ac253c8f3a7ac7e5f9a9a76e532a876367a3f95a13",
+    "signed-archive-attempt.log": "28199f3a53df667c231845159a18745427515196e4ce08d7eb93649220815229"
+  }
+}

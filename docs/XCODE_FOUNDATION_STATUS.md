@@ -1,5 +1,7 @@
 # Xcode foundation status
 
+> **Historical record.** This document retains the earlier app name and its recorded candidate or planning stage. The current app is **Personal Watch App**; use [the current three-action MVP](PERSONAL_WATCH_APP_MVP.md) and [device setup](XCODE_DEVICE_SETUP.md) for current scope and readiness.
+
 **Status:** HermesCore verified on Jose's Mac with the Xcode toolchain; iOS/watchOS app targets still need generation and device/simulator builds.
 
 ## Added

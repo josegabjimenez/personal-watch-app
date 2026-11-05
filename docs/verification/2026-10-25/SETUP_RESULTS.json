@@ -1,0 +1,63 @@
+{
+  "date": "2026-10-25",
+  "scope": "Existing paired-device setup follow-up; no backend deployment or live write",
+  "toolchain": "Xcode 27.0 (27A5237l), command-scoped DEVELOPER_DIR",
+  "paired_os_versions": {
+    "iOS": "27.2",
+    "watchOS": "27.0"
+  },
+  "checks": {
+    "physical_destinations": "Both existing paired devices listed; Developer Mode enabled; listing does not prove an active connection",
+    "existing_team_and_identity": "Resolved locally; original existing certificate reused by both signed products",
+    "generated_signing_settings": "Existing Team, Automatic style, standard Apple Development selector and no manual profile override",
+    "post_configuration_unsigned_device_build": "Passed, iOS with embedded Watch",
+    "signed_device_build": "Passed, iOS with embedded Watch",
+    "signed_bundle_codesign_verification": "Both strict/deep checks passed",
+    "signed_bundle_profiles": "Both renewed, cover corresponding paired devices and match existing Team/certificate/bundle IDs",
+    "signed_bundle_privacy_manifests": "Both present with NSPrivacyTracking=false",
+    "signed_archive": "Not created; checks apply to signed device app bundles",
+    "profile_refresh": "Resolved after existing Apple account login",
+    "identity_selector_correction": "Fingerprint pin conflicted with Automatic signing; standard Apple Development selector resolved it without creating a new certificate",
+    "iphone_install": "Succeeded in place, 0.3.4 (7) verified by CoreDevice",
+    "iphone_launch": "Succeeded after Jose confirmed developer-profile trust",
+    "iphone_running_process_readback": "One matching Hermes process verified",
+    "watch_direct_install": "Blocked by Bluetooth tunnel: initially CoreDevice4000/RemotePairing1035; final attempt CoreDevice4/RemotePairing1007, L2CAP open-channel failure",
+    "watch_normal_pair_refresh": "Command succeeded; connection remained rejected",
+    "watch_install_after_unlocked_nearby_confirmation": "Final attempt failed before tunnel creation: CoreDevice4/RemotePairing1007 and L2CAP open-channel failure",
+    "watch_companion_install_and_launch": "Human reports attempt starts then Install button returns; installation/launch not verified, device installer reason unknown",
+    "watch_installed_version": "Unverified",
+    "xcode_gui_selection": "Unverified; native Xcode and Finder UI calls timed out after human confirmed unlock",
+    "uninstall_unpair_or_erase": "Not performed",
+    "capture_retry_confirmation_or_live_write": "Not invoked",
+    "observed_backend_health": "HTTP 200, aura.grocery_capture only; code identity unverified",
+    "reminder_alert_delivery": "Unverified",
+    "live_reminder_and_expense_domains": "Not enabled in observed health",
+    "watch_embedded_bundle_additional_audit": "No mismatch found in companion/version metadata, physical watchOS architectures/minOS, profile allowance of signed entitlements, nested signatures or dependencies",
+    "bounded_mac_install_log_query": "54 matching entries, known Mac tunnel errors only; no companion installer rejection identified",
+    "iphone_usb_connection": "Confirmed after Jose connected cable: CoreDevice wired/paired/connected with DDI services; IOKit detects iPhone",
+    "usb_inventory_correction": "macOS supports SPUSBHostDataType; prior SPUSBDataType empty result cannot establish absence",
+    "watch_install_with_usb_companion": "Failed before transfer, CoreDevice4000/RemotePairing1035 Bluetooth connection rejection",
+    "phone_installer_log_collection": "Filtered attached-device log collection requires administrator authentication; noninteractive sudo unavailable. Private bounded helper awaits human run."
+  },
+  "pending_human_action": "Run the prepared private installer-log helper in Terminal and enter Mac administrator password locally; report Done or its error. Keep iPhone connected.",
+  "log_sha256": {
+    "unsigned-config-build.log": "6200e2cc66462273e64c9cf39b9d95df54cb6df99924fa0210761dc3520f626f",
+    "signed-resume-build-standard-identity.log": "02bc5e376e4edb5a3db12c010be747079b2e1407eedc094f72f607ecba833062",
+    "install-iphone.log": "56b1211e9fe5efa19787b478a560d9ea07205cfacdba5ee003d45f2aa55146e7",
+    "installed-iphone-app.json": "761b82c7256e524d18b6cb40b77b82db8c98daaff011b41a987912f3c3aca23d",
+    "launch-iphone-after-trust.log": "5297b192d6f3c834583d302157b323d24b09278c955b1974f933efe3a898e4ac",
+    "iphone-hermes-process-after-trust.json": "06e7e6fb4cdb5d5cf16c38ed09f316a9ff9759f618688a6e807e9da5302ec53a",
+    "install-watch-final-nearby.log": "709f72a8216e3b2a6f4d636772c5bcc1a2e3d0d1fcba0ec9edfc195e26e891ed",
+    "filtered-install-diagnostics.json": "32c014f3cc99eaff203dce5b9f9700229bda65fad3703e571aa0b6b88acfa44c",
+    "usb-confirmation.json": "da1ec907514e084c66ecf92158cfd42b33664753e7fc8f45778da8f1c40b810d",
+    "install-watch-usb.log": "b847119ebd899be8f844a831efce69b37c88835bac96223d9435d61530bc8413",
+    "iphone-install-log-collection.log": "74b0dd27cc11b0cb8f21b8139d61e4ba9be8f0ee5cc3bb2fddc876a2202c01ec",
+    "iphone-install-log-collection-privileged.log": "9b3a3b7a78f239c4473bb193476b1a860c91f1c2b4fab9c7639eceea414a60fb"
+  },
+  "signed_build_source_commit": "be43c532332a667ed6b20e44dce2ac8bac181616",
+  "implementation_sources_changed_during_resumed_setup": false,
+  "profile_expirations_America_Bogota": {
+    "iPhone": "2026-11-01T15:05:11-05:00",
+    "Watch": "2026-11-01T15:05:08-05:00"
+  }
+}

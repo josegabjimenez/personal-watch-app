@@ -1,4 +1,6 @@
-Entrada móvil autenticada de Jose desde HermesCapture.
+Entrada móvil autenticada de Jose desde Personal Watch App.
+
+Plantilla histórica de la suscripción genérica del servidor Hermes, solo para staging sin escrituras. No amplía las tres acciones del [MVP actual](../docs/PERSONAL_WATCH_APP_MVP.md) ni sustituye su BFF síncrono; los identificadores del protocolo se conservan por compatibilidad.
 
 MODO ACTUAL: STAGING / DRY-RUN / NO-WRITE.
 

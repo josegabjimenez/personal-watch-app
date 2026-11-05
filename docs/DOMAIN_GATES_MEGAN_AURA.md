@@ -1,5 +1,7 @@
 # Domain gates — Megan and Aura write-enabled capture
 
+These safety conditions apply to **Personal Watch App**. Its [current three-action MVP](PERSONAL_WATCH_APP_MVP.md) is the active scope; broader historical domain examples below do not authorize extra actions or service changes. Existing backend/domain names remain compatibility identifiers.
+
 **Purpose:** define the non-negotiable gates before `/webhooks/mobile-capture-v1` is allowed to create real Firefly/Notion/Calendar/Home Assistant side effects from the Watch app.
 
 ## Global write-enabled preconditions

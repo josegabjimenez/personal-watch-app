@@ -1,5 +1,7 @@
 # GPT-5.6-sol Max Thinking Review 005 — Final dry-run release readiness
 
+> **Historical record.** This document retains the earlier app name and its recorded candidate or planning stage. The current app is **Personal Watch App**; use [the current three-action MVP](PERSONAL_WATCH_APP_MVP.md) and [device setup](XCODE_DEVICE_SETUP.md) for current scope and readiness.
+
 **Date:** 2026-08-04 America/Bogota
 
 **Reviewed candidate:** Hermes Capture 0.3.2 (5), based on the physically verified 0.3.1 (4) baseline plus the remediations in this review.

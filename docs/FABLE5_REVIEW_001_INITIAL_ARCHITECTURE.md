@@ -1,5 +1,7 @@
 # Fable 5 Review 001 — Initial Watch-first architecture
 
+> **Historical record.** This document retains the earlier app name and its recorded candidate or planning stage. The current app is **Personal Watch App**; use [the current three-action MVP](PERSONAL_WATCH_APP_MVP.md) and [device setup](XCODE_DEVICE_SETUP.md) for current scope and readiness.
+
 **Date:** 2026-07-06 15:47 America/Bogota  
 **Scope:** decisions after Pipo/Atenea/Horacio first-pass briefs.  
 **Status:** provisional until Megan/Aura domain audit and physical Xcode/watchOS validation.

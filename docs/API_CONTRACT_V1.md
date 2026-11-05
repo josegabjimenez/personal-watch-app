@@ -1,4 +1,10 @@
-# Hermes Mobile Capture — API Contract v1
+# Personal Watch App — API Contract v1
+
+The product is **Personal Watch App**. Existing schema names, `HermesCapture` client values and `X-Hermes-*` headers below are retained wire-compatibility identifiers for installed clients and the current backend; they are not the app's visible name.
+
+The current Reminder implementation is described in [AI/Todoist reminder configuration](REMINDER_AI_TODOIST.md): it writes directly to Todoist Inbox, retains the original request/date identity, and reports unverified alerts. Historical generic routes below do not enable a Reminder helper, Notion or Calendar fallback.
+
+This document records the compatible wire format. The [current three-action MVP](PERSONAL_WATCH_APP_MVP.md) defines the allowed app actions; older contract examples do not enable general capture or additional write domains.
 
 ## Canonical endpoint
 

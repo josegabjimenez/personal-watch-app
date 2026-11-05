@@ -1,5 +1,7 @@
 # Pipo backend review remediation — mobile-capture-v1
 
+> **Historical record.** This document retains the earlier app name and its recorded candidate or planning stage. The current app is **Personal Watch App**; use [the current three-action MVP](PERSONAL_WATCH_APP_MVP.md) and [device setup](XCODE_DEVICE_SETUP.md) for current scope and readiness.
+
 **Date:** 2026-07-06 17:30 America/Bogota  
 **Review source:** `docs/subagent-briefs/pipo-backend-staging-review.md`  
 **Scope:** reconcile Pipo's backend staging review with the current Hermes generic webhook route and the synchronous BFF staging endpoint.

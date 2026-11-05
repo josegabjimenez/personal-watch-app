@@ -1,0 +1,16 @@
+{
+  "artifacts": {
+    "grocery_capture.py": "30638a74cc96c4ab71a7d3df8e89552ca1180798715fe6c04be33b4dd58ef943",
+    "grocery_helper_adapter.py": "2894998b54a22bbc3b398a801f8cf5a080a22bcd5fec51678ccd4d8f7baacbde",
+    "grocery_item_parser.py": "bf0097c86e43ca8b3349a96bc2ebf65f8d5d2e93eca4e9e3856ff6a2d134fdc7",
+    "mobile_capture_staging_server.py": "309602498c2a9ccf3186e7c336ed9ff5cc2fe3b693866fc1fbfdb18c1b0d5100"
+  },
+  "baseline_sha256": "f6eae64baaec83a04439919b9ffe54f49f4330ae60cbe55d54412e3e04041c38",
+  "external_helper_sha256": "24be164879b114487516b85b6811cce8239a4ad0744ec1e36bfc575a75a8e7e0",
+  "format_version": 1,
+  "journal_suffix": ".grocery.sqlite3",
+  "overlay_sha256": "2c6e4a775cb599436c829507b650acb681351697bbb19c32c2fbeb8c71d1c441",
+  "rollback": "Once batch state exists, use a compatible runtime or disable writes; never replay through the old single-item writer",
+  "runtime_file_count": 4,
+  "scope": "Historical grocery-only batch runtime; unrelated historical functions remain unchanged"
+}

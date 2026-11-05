@@ -1,5 +1,7 @@
 # Subagent synthesis — Hermes Siri AI Watch-first
 
+> **Historical record.** This document retains the earlier app name and its recorded candidate or planning stage. The current app is **Personal Watch App**; use [the current three-action MVP](PERSONAL_WATCH_APP_MVP.md) and [device setup](XCODE_DEVICE_SETUP.md) for current scope and readiness.
+
 **Consolidated:** 2026-07-06 15:47 America/Bogota  
 **Inputs:** Pipo technical architecture, Atenea Apple constraints audit, Horacio UX/art direction.
 
