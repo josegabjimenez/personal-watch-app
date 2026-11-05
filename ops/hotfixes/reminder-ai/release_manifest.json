@@ -18,7 +18,7 @@
     "reminder_ai_budget.py": "db7257c5fef90d583c09bc2d7acf6494355d61a8333774c8bbdbccd19a0eee0d",
     "reminder_capture.py": "b2e3232914b2878174c51c6049278e3b0ab73f08221691250352758bf9582093",
     "reminder_runtime.py": "dca7fecf1cc9341b5334b759af8e406d69db12764265244ddd8a0e88922cf29a",
-    "todoist_auth.py": "48009c343252c563a94b00df658d6034447abac98a8c3963667dfd59ed0e4257",
+    "todoist_auth.py": "ccd536d32da3b81287271f405bb41e5740a1f7e4c35a5065cabd2c130b887592",
     "todoist_reminders.py": "ebb3d44d99aeafe3558e2ea826de153845fd3e4b8fc12ddb1f073d1aa70fb2ab"
   },
   "baseline_artifacts": {
