@@ -86,6 +86,13 @@ docs/
   subagent-briefs/
 ```
 
+## Backend updates
+
+[Manual backend updates](docs/BACKEND_UPDATES.md) reproduces the exact sealed
+four-file grocery package, checks it synthetically, and supports an explicitly
+triggered atomic activation with batch-compatible recovery on the existing VPS.
+Activation requires the documented handoff; push and merge cannot deploy.
+
 ## Local development
 
 Start the staging BFF:
@@ -147,3 +154,7 @@ Still required before broader production writes:
 ## License
 
 MIT — see [`LICENSE`](LICENSE).
+
+## Manual backend updater
+
+[The reviewed updater](docs/BACKEND_UPDATES.md) remains unconfigured and inactive. Its immutable profile targets a historical four-file grocery package; it safely rejects the currently accepted six-file Mercado runtime and twelve-file reminder candidate. Merging its source enables synthetic checks only. A new compatible profile and explicit activation are separate decisions.

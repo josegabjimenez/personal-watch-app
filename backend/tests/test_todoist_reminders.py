@@ -243,7 +243,7 @@ class TodoistGatewayTests(unittest.TestCase):
         tokens = {"access_token": "synthetic-access-token", "refresh_token": "synthetic-refresh-token",
                   "token_type": "Bearer", "expires_in": 3600, "scope": "task:add data:read"}
         replacement = {**tokens, "access_token": "synthetic-new-access-token", "refresh_token": "synthetic-new-refresh-token"}
-        with tempfile.TemporaryDirectory(dir="/private/tmp") as directory:
+        with tempfile.TemporaryDirectory(dir=Path(tempfile.gettempdir()).resolve()) as directory:
             path = Path(directory) / "synthetic-credentials.json"
             path.write_text(json.dumps(auth._new_bundle("tdd_synthetic_personal_app", tokens, stamp)))
             path.chmod(0o600)
@@ -301,7 +301,7 @@ class TodoistGatewayTests(unittest.TestCase):
         stamp = 2_000_000_000
         tokens = {"access_token": "synthetic-access-token", "refresh_token": "synthetic-refresh-token",
                   "token_type": "Bearer", "expires_in": 3600, "scope": "task:add data:read"}
-        with tempfile.TemporaryDirectory(dir="/private/tmp") as directory:
+        with tempfile.TemporaryDirectory(dir=Path(tempfile.gettempdir()).resolve()) as directory:
             path = Path(directory) / "synthetic-credentials.json"
             path.write_text(json.dumps(auth._new_bundle("tdd_synthetic_personal_app", tokens, stamp)))
             path.chmod(0o600)

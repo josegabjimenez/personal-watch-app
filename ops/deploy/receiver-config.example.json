@@ -1,0 +1,66 @@
+{
+  "code_dir": "/opt/personal-watch-releases",
+  "entrypoint": "/REPLACE_WITH_AUDITED_CODE_DIRECTORY/mobile_capture_staging_server.py",
+  "expected_cmdline": [
+    "/usr/bin/python3",
+    "/REPLACE_WITH_AUDITED_CODE_DIRECTORY/mobile_capture_staging_server.py",
+    "--host",
+    "127.0.0.1",
+    "--port",
+    "8650",
+    "--secret-file",
+    "/REPLACE_WITH_EXISTING_SECRET_PATH",
+    "--ledger",
+    "/REPLACE_WITH_EXISTING_STATE_DIRECTORY/mobile_capture_ledger.sqlite",
+    "--aura-helper",
+    "/REPLACE_WITH_EXISTING_HELPER_PATH/apple_watch_capture.py"
+  ],
+  "expected_health": {
+    "mode": "allowlisted-write",
+    "service": "mobile-capture-v1-staging",
+    "status": "ok",
+    "write_domains": [
+      "aura.grocery_capture"
+    ]
+  },
+  "health_urls": [
+    "http://127.0.0.1:8650/health",
+    "https://REPLACE_WITH_EXISTING_TAILNET_DNS_NAME:8650/health"
+  ],
+  "keep": 5,
+  "package_profile": {
+    "inputs": {
+      "backend/grocery_capture.py": "30638a74cc96c4ab71a7d3df8e89552ca1180798715fe6c04be33b4dd58ef943",
+      "backend/grocery_helper_adapter.py": "2894998b54a22bbc3b398a801f8cf5a080a22bcd5fec51678ccd4d8f7baacbde",
+      "backend/grocery_item_parser.py": "bf0097c86e43ca8b3349a96bc2ebf65f8d5d2e93eca4e9e3856ff6a2d134fdc7",
+      "ops/hotfixes/grocery-live-clarification/build_release.py": "0dc6bb561d68e77a928fcda828d3d2ea58bc0df8fcd646eeb94664db6cbaa31c",
+      "ops/hotfixes/grocery-live-clarification/legacy-970e14d.patch": "8eac63e556d84a6706b5b4f6c26670a328bec16c1aea10566a4b01a18dc7dc46",
+      "ops/hotfixes/grocery-multi-item/build_release.py": "90b1bf2bfc2237c634ffe47f4570b1b19b5dec9c844f18fdeafb5175f55fda47",
+      "ops/hotfixes/grocery-multi-item/release_manifest.json": "9d34903345cac05cf695bc2839640e9aa9c773dd7a7261e6d5de0d7159a21f0e",
+      "ops/hotfixes/grocery-multi-item/server_overlay.py": "2c6e4a775cb599436c829507b650acb681351697bbb19c32c2fbeb8c71d1c441"
+    },
+    "manifest_path": "ops/hotfixes/grocery-multi-item/release_manifest.json",
+    "manifest_sha256": "9d34903345cac05cf695bc2839640e9aa9c773dd7a7261e6d5de0d7159a21f0e",
+    "package_revision": "1fe67948051f1d25140e13900d51275c498e0770",
+    "schema": 1,
+    "sealed_manifest": {
+      "artifacts": {
+        "grocery_capture.py": "30638a74cc96c4ab71a7d3df8e89552ca1180798715fe6c04be33b4dd58ef943",
+        "grocery_helper_adapter.py": "2894998b54a22bbc3b398a801f8cf5a080a22bcd5fec51678ccd4d8f7baacbde",
+        "grocery_item_parser.py": "bf0097c86e43ca8b3349a96bc2ebf65f8d5d2e93eca4e9e3856ff6a2d134fdc7",
+        "mobile_capture_staging_server.py": "309602498c2a9ccf3186e7c336ed9ff5cc2fe3b693866fc1fbfdb18c1b0d5100"
+      },
+      "baseline_sha256": "f6eae64baaec83a04439919b9ffe54f49f4330ae60cbe55d54412e3e04041c38",
+      "external_helper_sha256": "24be164879b114487516b85b6811cce8239a4ad0744ec1e36bfc575a75a8e7e0",
+      "format_version": 1,
+      "journal_suffix": ".grocery.sqlite3",
+      "overlay_sha256": "2c6e4a775cb599436c829507b650acb681351697bbb19c32c2fbeb8c71d1c441",
+      "rollback": "Once batch state exists, use a compatible runtime or disable writes; never replay through the old single-item writer",
+      "runtime_file_count": 4,
+      "scope": "Historical grocery-only batch runtime; unrelated historical functions remain unchanged"
+    },
+    "state_compatibility": "grocery-batch-v1"
+  },
+  "service": "hermes-mobile-capture.service",
+  "state_dir": "/var/lib/personal-watch-deploy"
+}
