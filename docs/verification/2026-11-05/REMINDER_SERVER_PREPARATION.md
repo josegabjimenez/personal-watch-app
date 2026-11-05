@@ -1,5 +1,9 @@
 # Reminder server preparation — November 5, 2026
 
+This is the earlier cap0/grocery-only preparation checkpoint. The subsequently
+approved USD2 activation and first live test are recorded in
+[REMINDER_ACTIVATION_TEST.md](REMINDER_ACTIVATION_TEST.md).
+
 Jose explicitly authorized continuing the server installation autonomously.
 This receipt covers preparation of the existing Mercado service with reminder
 writes disabled and a separate reminder allowance of zero. It does not establish
