@@ -1,5 +1,7 @@
 # Structured reminders to Todoist Inbox
 
+November 5 continuation: see [the resumed implementation evidence](verification/2026-11-05/REMINDER_RESUME.md) and [the exact historical-service package and rollout plan](../ops/hotfixes/reminder-ai/README.md). Dedicated OAuth, existing labels, an Inbox pin and an independent zero-default cost guard extend the original implementation below. No reminder rollout or live acceptance is implied.
+
 This increment retains the standalone Python BFF and the signed mobile-capture v1/outbox contract. The existing Recordatorio action accepts natural Spanish and English; it proposes one new personal task through OpenAI Responses with strict Structured Outputs, then deterministic code validates its title, future intended task time and `America/Bogota`. Mocked language examples establish the interface, not actual model accuracy or latency.
 
 The destination is the authenticated user's existing Todoist Inbox. No project, label, account setting, old reminder or other service is created or reorganized. Grocery still uses the approved official list and its existing helper. Expenses retain their separate confirmed COP flow. Reminder never falls back to Notion, Calendar, Slack or the legacy helper.

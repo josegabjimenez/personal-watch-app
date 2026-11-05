@@ -4,14 +4,17 @@ from __future__ import annotations
 import copy
 import io
 import json
+import tempfile
 import threading
 import time
 import unittest
 from datetime import datetime
+from pathlib import Path
 from unittest import mock
 from urllib import error, parse
 
 import todoist_reminders as todoist
+import todoist_auth as auth
 
 COMMAND = "96e26ce3-5cd1-4b7b-a393-2f64abac5bdf"
 TEMP_ID = "c055f623-d8b0-44cf-b47a-856684b1293c"
@@ -26,6 +29,7 @@ def task(**changes):
         "project_id": IDENTITY["inbox_project_id"], "content": PLAN["title"],
         "description": todoist.marker(COMMAND), "parent_id": None, "section_id": None,
         "checked": False, "is_deleted": False, "deadline": None,
+        "labels": [], "priority": 1,
         "due": {"date": "2099-10-30T19:00:00.000000Z", "timezone": "America/Bogota", "is_recurring": False},
     }
     value.update(changes)
@@ -75,6 +79,11 @@ class FakeOpener:
 
 
 class TodoistGatewayTests(unittest.TestCase):
+    @staticmethod
+    def rejected():
+        return error.HTTPError("https://api.todoist.com/api/v1/sync", 401,
+                               "sensitive provider rejection", {}, io.BytesIO(b"sensitive provider body"))
+
     def gateway(self, values, *, timeout=5):
         opener = FakeOpener(values)
         patch = mock.patch.object(todoist.request, "build_opener", return_value=opener)
@@ -106,9 +115,238 @@ class TodoistGatewayTests(unittest.TestCase):
             "type": "item_add", "uuid": COMMAND, "temp_id": TEMP_ID,
             "args": {"content": PLAN["title"], "description": todoist.marker(COMMAND), "project_id": IDENTITY["inbox_project_id"],
                      "due": {"date": "2099-10-30T19:00:00Z", "timezone": "America/Bogota", "is_recurring": False},
-                     "auto_reminder": True, "auto_parse_labels": False},
+                     "auto_reminder": True, "auto_parse_labels": False, "labels": [], "priority": 1},
         })
         self.assertTrue(all(response.closed for response in opener.responses))
+
+    def test_label_catalog_paginates_only_existing_safe_exact_names(self):
+        rows = [{"id": f"label-{i}", "name": name} for i, name in enumerate(("On_Phone", "Someday", "GCal", "unknown"))]
+        gateway, opener = self.gateway([page(rows, "opaque/+?=cursor"), page([
+            {"id": "label-duration", "name": "10_min"},
+            {"id": "deleted-label", "name": "On_PC", "is_deleted": True},
+        ])])
+        self.assertEqual(gateway.label_catalog(), ("10_min", "On_Phone"))
+        params = [parse.parse_qs(parse.urlsplit(req.full_url).query) for req, _ in opener.calls]
+        self.assertEqual(params, [{"limit": ["100"]}, {"limit": ["100"], "cursor": ["opaque/+?=cursor"]}])
+        self.assertTrue(all(req.method == "GET" and parse.urlsplit(req.full_url).path == "/api/v1/labels" for req, _ in opener.calls))
+
+    def test_label_catalog_rejects_invalid_duplicates_and_unbounded_pagination(self):
+        row = {"id": "label-phone", "name": "On_Phone"}
+        cases = ([page([row, row])], [page([{"id": "label-phone", "name": []}])],
+                 [page([{"id": "label-phone", "name": "On_Phone", "is_deleted": "false"}])],
+                 [page([{"id": "../private", "name": "On_Phone"}])],
+                 [page([row], "repeat"), page(cursor="repeat")],
+                 [page(cursor=str(i)) for i in range(todoist.MAX_PAGES)])
+        for pages in cases:
+            with self.subTest(pages=pages):
+                gateway, opener = self.gateway(pages)
+                with self.assertRaises(todoist.RetryableTodoistError):
+                    gateway.label_catalog()
+                self.assertTrue(all(req.method == "GET" for req, _ in opener.calls))
+
+    def test_selected_labels_are_rechecked_sent_as_names_and_exactly_read_back(self):
+        labels = ["On_Phone", "10_min", "Free_Time"]
+        plan = {**PLAN, "labels": labels}
+        catalog = page([{"id": f"label-{i}", "name": name} for i, name in enumerate(labels)])
+        gateway, opener = self.gateway([USER, page(), catalog, sync(), task(labels=list(reversed(labels)))])
+        result = gateway.create_or_reconcile(plan, COMMAND, TEMP_ID, IDENTITY)
+        self.assertEqual(result["task_id"], "synthetic-task")
+        post = next(req for req, _ in opener.calls if req.method == "POST")
+        args = json.loads(parse.parse_qs(post.data.decode())["commands"][0])[0]["args"]
+        self.assertEqual(args["labels"], sorted(labels))
+        self.assertEqual(args["priority"], 1)
+        self.assertIs(args["auto_parse_labels"], False)
+        self.assertEqual(plan["labels"], labels)
+
+    def test_removed_label_never_creates_label_or_task(self):
+        gateway, opener = self.gateway([USER, page(), page()])
+        with self.assertRaisesRegex(todoist.PermanentTodoistError, "selected_label_unavailable"):
+            gateway.create_or_reconcile({**PLAN, "labels": ["On_PC"]}, COMMAND, TEMP_ID, IDENTITY)
+        self.assertTrue(all(req.method == "GET" for req, _ in opener.calls))
+
+    def test_new_plan_receipt_requires_exact_labels_and_ordinary_priority(self):
+        plan = {**PLAN, "labels": ["On_Phone", "10_min"]}
+        for changes in ({"labels": []}, {"labels": ["On_Phone"]}, {"labels": ["On_Phone", "10_min", "GCal"]},
+                        {"labels": ["On_Phone", "10_min", "10_min"]}, {"labels": ["On_Phone", True]},
+                        {"labels": None}, {"labels": ["On_Phone", "10_min"], "priority": 4},
+                        {"labels": ["On_Phone", "10_min"], "priority": True}):
+            with self.subTest(changes=changes):
+                gateway, opener = self.gateway([USER, task(**changes)])
+                with self.assertRaisesRegex(todoist.RetryableTodoistError, "readback_mismatch"):
+                    gateway.reconcile(plan, COMMAND, IDENTITY, external_id="synthetic-task")
+                self.assertTrue(all(req.method == "GET" for req, _ in opener.calls))
+
+    def test_old_frozen_unlabeled_plan_recovers_without_catalog_or_new_metadata(self):
+        legacy = task()
+        del legacy["labels"]
+        del legacy["priority"]
+        gateway, opener = self.gateway([USER, legacy])
+        receipt = gateway.reconcile(PLAN, COMMAND, IDENTITY, external_id="synthetic-task")
+        self.assertTrue(receipt["duplicate"])
+        self.assertEqual(len(opener.calls), 2)
+        self.assertTrue(all("/labels" not in req.full_url and req.method == "GET" for req, _ in opener.calls))
+        gateway, _ = self.gateway([USER, task(labels=["On_Phone"])])
+        with self.assertRaisesRegex(todoist.RetryableTodoistError, "readback_mismatch"):
+            gateway.reconcile(PLAN, COMMAND, IDENTITY, external_id="synthetic-task")
+
+    def test_invalid_label_plans_never_contact_provider(self):
+        for labels in (None, "On_PC", ["on_pc"], ["GCal"], ["Someday"], ["unknown"], ["5_min", "10_min"], ["On_PC", "On_PC"], [False]):
+            with self.subTest(labels=labels):
+                gateway, opener = self.gateway([])
+                with self.assertRaisesRegex(todoist.PermanentTodoistError, "invalid_reminder_labels"):
+                    gateway.create_or_reconcile({**PLAN, "labels": labels}, COMMAND, TEMP_ID, IDENTITY)
+                self.assertEqual(opener.calls, [])
+
+    def test_callable_bearer_is_refreshed_per_request(self):
+        gateway, opener = self.gateway([USER, USER])
+        provider = mock.Mock(side_effect=["first-synthetic-token", "second-synthetic-token"])
+        gateway = todoist.TodoistGateway(provider)
+        gateway.identity()
+        gateway.identity()
+        self.assertEqual(provider.call_count, 2)
+        self.assertEqual([req.get_header("Authorization") for req, _ in opener.calls],
+                         ["Bearer first-synthetic-token", "Bearer second-synthetic-token"])
+
+    def test_callable_bearer_errors_or_invalid_values_are_sanitized_without_network(self):
+        for provider in (mock.Mock(side_effect=ValueError("sensitive auth bundle")), lambda: None,
+                         lambda: "synthetic\nheader", lambda: {"token": "sensitive auth bundle"}):
+            with self.subTest(provider=type(provider).__name__):
+                gateway, opener = self.gateway([])
+                gateway = todoist.TodoistGateway(provider)
+                with self.assertRaises(todoist.PermanentTodoistError) as raised:
+                    gateway.identity()
+                self.assertNotIn("sensitive", str(raised.exception))
+                self.assertIsNone(raised.exception.__cause__)
+                self.assertEqual(opener.calls, [])
+
+    def test_slow_bearer_cannot_dispatch_after_the_caller_deadline(self):
+        release = threading.Event()
+        finished = threading.Event()
+
+        def bearer():
+            release.wait(2)
+            finished.set()
+            return "synthetic-token"
+
+        gateway, opener = self.gateway([])
+        gateway = todoist.TodoistGateway(bearer, timeout=0.03)
+        try:
+            with self.assertRaises(todoist.RetryableTodoistError):
+                gateway.identity()
+        finally:
+            release.set()
+            self.assertTrue(finished.wait(1))
+        self.assertEqual(opener.calls, [])
+
+    def test_401_refreshes_future_expiring_credential_store_token_once(self):
+        stamp = 2_000_000_000
+        tokens = {"access_token": "synthetic-access-token", "refresh_token": "synthetic-refresh-token",
+                  "token_type": "Bearer", "expires_in": 3600, "scope": "task:add data:read"}
+        replacement = {**tokens, "access_token": "synthetic-new-access-token", "refresh_token": "synthetic-new-refresh-token"}
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as directory:
+            path = Path(directory) / "synthetic-credentials.json"
+            path.write_text(json.dumps(auth._new_bundle("tdd_synthetic_personal_app", tokens, stamp)))
+            path.chmod(0o600)
+            store = auth.CredentialStore(path, now=lambda: stamp)
+            _, opener = self.gateway([self.rejected(), USER])
+            gateway = todoist.TodoistGateway(store.bearer)
+            with mock.patch.object(auth, "_post", return_value=replacement) as refresh:
+                self.assertEqual(gateway.identity(), IDENTITY)
+            self.assertEqual(refresh.call_count, 1)
+            self.assertEqual([req.get_header("Authorization") for req, _ in opener.calls],
+                             ["Bearer synthetic-access-token", "Bearer synthetic-new-access-token"])
+            self.assertEqual(json.loads(path.read_text())["access_token"], replacement["access_token"])
+
+    def test_401_post_retry_keeps_exact_sync_bytes_uuid_url_and_deadline(self):
+        provider = mock.Mock(side_effect=["old-token", "old-token", "old-token", "new-token", "new-token"])
+        _, opener = self.gateway([USER, page(), self.rejected(), sync(), task()])
+        gateway = todoist.TodoistGateway(provider)
+        self.assertEqual(gateway.create_or_reconcile(PLAN, COMMAND, TEMP_ID, IDENTITY)["task_id"], "synthetic-task")
+        posts = [(req, timeout) for req, timeout in opener.calls if req.method == "POST"]
+        self.assertEqual(len(posts), 2)
+        self.assertEqual(posts[0][0].full_url, posts[1][0].full_url)
+        self.assertEqual(posts[0][0].data, posts[1][0].data)
+        self.assertEqual(json.loads(parse.parse_qs(posts[1][0].data.decode())["commands"][0])[0]["uuid"], COMMAND)
+        self.assertEqual(posts[0][0].get_header("Authorization"), "Bearer old-token")
+        self.assertEqual(posts[1][0].get_header("Authorization"), "Bearer new-token")
+        self.assertLessEqual(posts[1][1], posts[0][1])
+        self.assertEqual([call for call in provider.call_args_list if call.kwargs], [mock.call(rejected_token="old-token")])
+
+    def test_second_401_stops_without_another_refresh_or_http_attempt(self):
+        provider = mock.Mock(side_effect=["old-token", "new-token"])
+        _, opener = self.gateway([self.rejected(), self.rejected()])
+        gateway = todoist.TodoistGateway(provider)
+        with self.assertRaisesRegex(todoist.PermanentTodoistError, "^todoist_authorization_required$") as raised:
+            gateway.identity()
+        self.assertIsNone(raised.exception.__cause__)
+        self.assertEqual(provider.call_args_list, [mock.call(), mock.call(rejected_token="old-token")])
+        self.assertEqual(len(opener.calls), 2)
+
+    def test_failed_unsupported_or_unchanged_refresh_never_reuses_rejected_bearer(self):
+        providers = ("static-token", lambda: "old-token",
+                     mock.Mock(side_effect=["old-token", RuntimeError("sensitive auth bundle")]),
+                     mock.Mock(side_effect=["old-token", "old-token"]),
+                     mock.Mock(side_effect=["old-token", None]))
+        for provider in providers:
+            with self.subTest(provider=type(provider).__name__):
+                _, opener = self.gateway([self.rejected()])
+                gateway = todoist.TodoistGateway(provider)
+                with self.assertRaises(todoist.PermanentTodoistError) as raised:
+                    gateway.identity()
+                self.assertNotIn("sensitive", str(raised.exception))
+                self.assertIsNone(raised.exception.__cause__)
+                self.assertEqual(len(opener.calls), 1)
+
+    def test_uncertain_credential_refresh_remains_reserved_and_does_not_retry_api(self):
+        stamp = 2_000_000_000
+        tokens = {"access_token": "synthetic-access-token", "refresh_token": "synthetic-refresh-token",
+                  "token_type": "Bearer", "expires_in": 3600, "scope": "task:add data:read"}
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as directory:
+            path = Path(directory) / "synthetic-credentials.json"
+            path.write_text(json.dumps(auth._new_bundle("tdd_synthetic_personal_app", tokens, stamp)))
+            path.chmod(0o600)
+            store = auth.CredentialStore(path, now=lambda: stamp)
+            _, opener = self.gateway([self.rejected()])
+            gateway = todoist.TodoistGateway(store.bearer)
+            with mock.patch.object(auth, "_post", side_effect=auth.ReauthorizationRequired("sensitive refresh failure")) as refresh:
+                with self.assertRaisesRegex(todoist.PermanentTodoistError, "^todoist_authorization_required$"):
+                    gateway.identity()
+                with self.assertRaises(todoist.PermanentTodoistError):
+                    gateway.identity()
+            self.assertEqual(refresh.call_count, 1)
+            self.assertEqual(len(opener.calls), 1)
+            self.assertEqual(json.loads(path.read_text())["refresh_state"], "refreshing")
+
+    def test_slow_401_refresh_cannot_dispatch_http_after_original_deadline(self):
+        release, entered, finished = threading.Event(), threading.Event(), threading.Event()
+
+        def bearer(*, rejected_token=None):
+            if rejected_token is None:
+                return "old-token"
+            entered.set()
+            release.wait(2)
+            finished.set()
+            return "new-token"
+
+        _, opener = self.gateway([self.rejected()])
+        gateway = todoist.TodoistGateway(bearer, timeout=0.03)
+        try:
+            with self.assertRaises(todoist.RetryableTodoistError):
+                gateway.identity()
+            self.assertTrue(entered.is_set())
+        finally:
+            release.set()
+            self.assertTrue(finished.wait(1))
+        self.assertEqual(len(opener.calls), 1)
+
+    def test_non_401_transport_failure_does_not_refresh_or_retry(self):
+        provider = mock.Mock(return_value="old-token")
+        _, opener = self.gateway([error.URLError("sensitive uncertain POST")])
+        gateway = todoist.TodoistGateway(provider)
+        with self.assertRaises(todoist.RetryableTodoistError):
+            gateway.identity()
+        self.assertEqual(provider.call_args_list, [mock.call()])
+        self.assertEqual(len(opener.calls), 1)
 
     def test_lost_ack_retries_same_uuid_and_same_temp_id(self):
         gateway, opener = self.gateway([USER, page(), error.URLError("private timeout"), USER, page(), sync(), task()])

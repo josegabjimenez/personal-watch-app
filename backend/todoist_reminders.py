@@ -10,6 +10,7 @@ item_add, fixed-zone due dates, User Info and cursor pagination).
 """
 from __future__ import annotations
 
+import hmac
 import json
 import math
 import queue
@@ -26,6 +27,8 @@ BOGOTA = "America/Bogota"
 MAX_RESPONSE_BYTES = 1024 * 1024
 MAX_PAGES = 10
 PAGE_SIZE = 100
+SUPPORTED_LABELS = frozenset({"On_Phone", "On_PC", "Free_Time", "5_min", "10_min", "20_min", "30_min", "Long"})
+DURATION_LABELS = frozenset({"5_min", "10_min", "20_min", "30_min", "Long"})
 # A stalled transport cannot create an unbounded number of background workers.
 _TRANSPORT_SLOTS = threading.BoundedSemaphore(4)
 _ID_RE = re.compile(r"[A-Za-z0-9_-]{1,200}\Z")
@@ -87,7 +90,20 @@ def _validate_plan(plan: Any) -> tuple[str, datetime]:
         instant = _instant(due.get("start"))
     except (TypeError, ValueError, OverflowError):
         raise PermanentTodoistError("invalid_reminder_plan") from None
+    _plan_labels(plan)
     return title, instant
+
+
+def _plan_labels(plan: dict[str, Any]) -> list[str]:
+    # Older durable plans have no labels field. They remain unlabeled and are
+    # never reinterpreted or assigned newly inferred metadata during recovery.
+    labels = plan.get("labels", [])
+    if (not isinstance(labels, list) or len(labels) > len(SUPPORTED_LABELS)
+            or any(not isinstance(name, str) for name in labels)
+            or len(labels) != len(set(labels)) or not set(labels) <= SUPPORTED_LABELS
+            or len(set(labels) & DURATION_LABELS) > 1):
+        raise PermanentTodoistError("invalid_reminder_labels")
+    return sorted(labels)
 
 
 def _validate_identity(identity: Any) -> dict[str, str]:
@@ -99,32 +115,75 @@ def _validate_identity(identity: Any) -> dict[str, str]:
 
 
 class TodoistGateway:
-    def __init__(self, token: str, timeout: float = 5):
-        if not isinstance(token, str) or not token or any(char.isspace() for char in token):
+    def __init__(self, token: str | Callable[[], str], timeout: float = 5):
+        if not callable(token) and not self._valid_token(token):
             raise PermanentTodoistError("todoist_token_not_configured")
         if not isinstance(timeout, (int, float)) or isinstance(timeout, bool) or not math.isfinite(timeout) or not 0 < timeout <= 30:
             raise PermanentTodoistError("invalid_todoist_timeout")
         self._token = token
         self.timeout = float(timeout)
 
+    @staticmethod
+    def _valid_token(value: Any) -> bool:
+        return isinstance(value, str) and 1 <= len(value) <= 4096 and not any(char.isspace() for char in value)
+
+    def _bearer(self, *, rejected_token: str | None = None) -> str:
+        try:
+            if rejected_token is not None:
+                if not callable(self._token):
+                    raise ValueError("static_bearer")
+                token = self._token(rejected_token=rejected_token)
+            else:
+                token = self._token() if callable(self._token) else self._token
+        except Exception:
+            code = "todoist_authorization_required" if rejected_token is not None else "todoist_token_unavailable"
+            raise PermanentTodoistError(code) from None
+        if not self._valid_token(token):
+            raise PermanentTodoistError("todoist_token_not_configured")
+        if rejected_token is not None and hmac.compare_digest(token.encode(), rejected_token.encode()):
+            raise PermanentTodoistError("todoist_authorization_required")
+        return token
+
     def _request(self, method: str, path: str, deadline: float, *, form: dict[str, str] | None = None) -> dict[str, Any]:
         remaining = deadline - time.monotonic()
         if remaining <= 0 or not _TRANSPORT_SLOTS.acquire(blocking=False):
             raise RetryableTodoistError("todoist_timeout_or_busy")
         data = parse.urlencode(form).encode("utf-8") if form is not None else None
-        headers = {"Authorization": f"Bearer {self._token}", "Accept": "application/json"}
-        if data is not None:
-            headers["Content-Type"] = "application/x-www-form-urlencoded"
-        req = request.Request(API_ROOT + path, data=data, headers=headers, method=method)
         result: queue.Queue[Any] = queue.Queue(maxsize=1)
 
         def transport() -> None:
             try:
+                # Refresh the bearer inside the bounded worker. A credential
+                # provider's failures/values never become exception messages.
+                token = self._bearer()
                 # Redirects could send the bearer token elsewhere. This API has
                 # a fixed origin and is not expected to redirect.
                 opener = request.build_opener(_NoRedirect())
-                with opener.open(req, timeout=remaining) as response:
-                    raw = response.read(MAX_RESPONSE_BYTES + 1)
+                for attempt in range(2):
+                    transport_remaining = deadline - time.monotonic()
+                    if transport_remaining <= 0:
+                        raise RetryableTodoistError("todoist_timeout_or_busy")
+                    headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+                    if data is not None:
+                        headers["Content-Type"] = "application/x-www-form-urlencoded"
+                    req = request.Request(API_ROOT + path, data=data, headers=headers, method=method)
+                    try:
+                        with opener.open(req, timeout=transport_remaining) as response:
+                            raw = response.read(MAX_RESPONSE_BYTES + 1)
+                    except error.HTTPError as exc:
+                        if exc.code != 401:
+                            raise
+                        exc.close()
+                        if attempt or not callable(self._token):
+                            raise PermanentTodoistError("todoist_authorization_required") from None
+                        if deadline <= time.monotonic():
+                            raise RetryableTodoistError("todoist_timeout_or_busy") from None
+                        # Only an explicit authorization rejection permits this
+                        # one retry. Reuse exact URL/body/command UUID and the
+                        # original deadline; uncertain network writes never retry.
+                        token = self._bearer(rejected_token=token)
+                        continue
+                    break
                 if len(raw) > MAX_RESPONSE_BYTES:
                     raise RetryableTodoistError("todoist_response_too_large")
                 decoded = json.loads(raw)
@@ -142,7 +201,7 @@ class TodoistGateway:
                     result.put(RetryableTodoistError("todoist_transport_failed"))
             except (ValueError, UnicodeError):
                 result.put(RetryableTodoistError("todoist_invalid_response"))
-            except RetryableTodoistError as exc:
+            except (RetryableTodoistError, PermanentTodoistError) as exc:
                 result.put(exc)
             except Exception:
                 # Transport exception strings can contain URLs, headers or
@@ -151,7 +210,11 @@ class TodoistGateway:
             finally:
                 _TRANSPORT_SLOTS.release()
 
-        threading.Thread(target=transport, name="todoist-reminder-http", daemon=True).start()
+        try:
+            threading.Thread(target=transport, name="todoist-reminder-http", daemon=True).start()
+        except Exception:
+            _TRANSPORT_SLOTS.release()
+            raise RetryableTodoistError("todoist_transport_failed") from None
         try:
             value = result.get(timeout=max(0.001, deadline - time.monotonic()))
         except queue.Empty:
@@ -176,6 +239,45 @@ class TodoistGateway:
         """Read only the authenticated user's minimal destination identity."""
         return self._identity(time.monotonic() + self.timeout)
 
+    def _label_catalog(self, deadline: float) -> tuple[str, ...]:
+        names: set[str] = set()
+        identifiers: set[str] = set()
+        cursor = None
+        cursors: set[str] = set()
+        for _ in range(MAX_PAGES):
+            params: dict[str, Any] = {"limit": PAGE_SIZE}
+            if cursor is not None:
+                params["cursor"] = cursor
+            try:
+                page = self._request("GET", "/labels?" + parse.urlencode(params), deadline)
+            except _NotFound:
+                raise RetryableTodoistError("todoist_labels_unavailable") from None
+            rows = page.get("results")
+            if not isinstance(rows, list) or len(rows) > PAGE_SIZE:
+                raise RetryableTodoistError("todoist_invalid_label_page")
+            for row in rows:
+                if not isinstance(row, dict):
+                    raise RetryableTodoistError("todoist_invalid_label_page")
+                name, identifier = row.get("name"), row.get("id")
+                if (not _resource_id(identifier) or identifier in identifiers or not isinstance(name, str)
+                        or not 1 <= len(name) <= 128 or any(ord(c) < 32 or ord(c) == 127 for c in name)
+                        or name in names or type(row.get("is_deleted", False)) is not bool):
+                    raise RetryableTodoistError("todoist_invalid_label_page")
+                identifiers.add(identifier)
+                if not row.get("is_deleted", False):
+                    names.add(name)
+            cursor = page.get("next_cursor")
+            if cursor is None:
+                return tuple(sorted(names & SUPPORTED_LABELS))
+            if not isinstance(cursor, str) or not cursor or len(cursor) > 4096 or cursor in cursors:
+                raise RetryableTodoistError("todoist_invalid_label_cursor")
+            cursors.add(cursor)
+        raise RetryableTodoistError("todoist_label_page_limit")
+
+    def label_catalog(self) -> tuple[str, ...]:
+        """Existing exact safe names only; no label creation or mutation."""
+        return self._label_catalog(time.monotonic() + self.timeout)
+
     def _verify_identity(self, identity: dict[str, str], deadline: float) -> dict[str, str]:
         expected = _validate_identity(identity)
         if self._identity(deadline) != expected:
@@ -186,6 +288,8 @@ class TodoistGateway:
     def _receipt(task: Any, plan: dict[str, Any], command_uuid: str, identity: dict[str, str], *, duplicate: bool) -> dict[str, Any]:
         title, due_instant = _validate_plan(plan)
         due = task.get("due") if isinstance(task, dict) else None
+        labels = task.get("labels", [] if "labels" not in plan else None) if isinstance(task, dict) else None
+        selected = _plan_labels(plan)
         try:
             matches = (
                 isinstance(task, dict) and _resource_id(task.get("id"))
@@ -196,6 +300,10 @@ class TodoistGateway:
                 and task.get("parent_id") is None and task.get("section_id") is None
                 and task.get("is_deleted", False) is False and task.get("checked", False) is False
                 and task.get("deadline") is None
+                and isinstance(labels, list) and all(isinstance(name, str) for name in labels)
+                and len(labels) == len(set(labels)) and set(labels) == set(selected)
+                and type(task.get("priority", 1 if "labels" not in plan else None)) is int
+                and task.get("priority", 1 if "labels" not in plan else None) == 1
                 and isinstance(due, dict) and due.get("timezone") == BOGOTA
                 and due.get("is_recurring") is False and _instant(due.get("date")) == due_instant
             )
@@ -282,6 +390,9 @@ class TodoistGateway:
             if on_external_id:
                 on_external_id(previous["task_id"])
             return previous
+        labels = _plan_labels(plan)
+        if labels and not set(labels) <= set(self._label_catalog(deadline)):
+            raise PermanentTodoistError("todoist_selected_label_unavailable")
         # Identity/pagination can take time. An elapsed schedule permits only
         # recovery of an existing task; it must never dispatch a new command.
         if due_instant <= dispatch_now():
@@ -293,6 +404,7 @@ class TodoistGateway:
                 "project_id": expected["inbox_project_id"],
                 "due": {"date": due_instant.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"), "timezone": BOGOTA, "is_recurring": False},
                 "auto_reminder": True, "auto_parse_labels": False,
+                "labels": labels, "priority": 1,
             },
         }
         try:

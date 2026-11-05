@@ -10,6 +10,7 @@ from contextlib import contextmanager
 from datetime import datetime
 import fcntl
 import hashlib
+import hmac
 import json
 from pathlib import Path
 import sqlite3
@@ -19,6 +20,8 @@ import uuid
 
 import reminder_ai
 from todoist_reminders import TodoistGateway, RetryableTodoistError, PermanentTodoistError
+from todoist_auth import CredentialStore
+from reminder_ai_budget import ReminderBudget, BudgetBlocked
 
 DOMAIN = "aura.reminder_capture"
 
@@ -119,6 +122,23 @@ def _saved(payload: dict, plan: dict, receipt: dict) -> dict:
     }
 
 
+def _command_uuid(secret: bytes, kind: str, request_id: str, binding: str) -> str:
+    # Same original capture + server signing identity survives a main-ledger
+    # restore. Existing persisted UUIDs stay unchanged; no migration is made.
+    material = ("reminder-v1\0" + kind + "\0" + request_id + "\0" + binding).encode("utf-8")
+    return str(uuid.UUID(bytes=hmac.new(secret, material, hashlib.sha256).digest()[:16], version=5))
+
+
+def _gateway(cfg: Any) -> TodoistGateway:
+    credentials = getattr(cfg, "reminder_todoist_credentials_file", None)
+    if credentials is not None:
+        # The private bundle is maintained by the dedicated app OAuth flow.
+        bearer = CredentialStore(credentials).bearer
+    else:
+        bearer = _token(cfg.reminder_todoist_token_file)
+    return TodoistGateway(bearer, timeout=cfg.reminder_todoist_timeout)
+
+
 def execute(payload: dict, cfg: Any, *, now: Any) -> dict:
     """Called only after the server's exact Reminder route/authority checks."""
     request_id = payload["request_id"]
@@ -134,9 +154,13 @@ def execute(payload: dict, cfg: Any, *, now: Any) -> dict:
             if row is None:
                 conn.execute("""INSERT INTO reminder_operation_ledger
                     (request_id,payload_hash,status,command_uuid,temp_id,updated_at)
-                    VALUES (?,?,'interpreting',?,?,?)""", (request_id, binding, str(uuid.uuid4()), str(uuid.uuid4()), _timestamp()))
+                    VALUES (?,?,'unbound',?,?,?)""", (request_id, binding,
+                        _command_uuid(cfg.secret, "command", request_id, binding),
+                        _command_uuid(cfg.secret, "temporary", request_id, binding), _timestamp()))
                 row = conn.execute("SELECT * FROM reminder_operation_ledger WHERE request_id = ?", (request_id,)).fetchone()
             operation = dict(row)
+        if operation["status"] == "reconciliation_required":
+            raise ReminderRetryable("reminder_operation_reconciliation_required")
         if operation["response_json"]:
             result = json.loads(operation["response_json"])
             if result.get("write_committed"):
@@ -146,6 +170,7 @@ def execute(payload: dict, cfg: Any, *, now: Any) -> dict:
         # Missing server credentials are retryable configuration gates. They are
         # never sourced from a desktop connector or another process environment.
         plan = json.loads(operation["plan_json"]) if operation["plan_json"] else None
+        gateway = None
         if plan is None:
             try:
                 reminder_ai.validate_capture_timestamp(payload.get("created_at"), now())
@@ -155,13 +180,48 @@ def execute(payload: dict, cfg: Any, *, now: Any) -> dict:
                 return response
             if cfg.reminder_provider != "openai":
                 raise ReminderRetryable("reminder_provider_not_configured")
+            try:
+                budget = ReminderBudget(
+                    cfg.reminder_budget_path or Path(str(cfg.ledger_path) + ".reminder-ai-budget.sqlite3"),
+                    monthly_limit_usd=cfg.reminder_monthly_limit_usd, now=now,
+                )
+                if operation["status"] == "unbound":
+                    if budget.attempt_count(request_id, binding):
+                        _update(cfg.ledger_path, request_id, status="reconciliation_required")
+                        raise ReminderRetryable("reminder_operation_reconciliation_required")
+                    _update(cfg.ledger_path, request_id, status="interpreting")
+                    operation["status"] = "interpreting"
+            except BudgetBlocked:
+                raise ReminderRetryable("reminder_budget_pending") from None
             api_key = _token(cfg.reminder_openai_key_file)
+            # Resolve app-server authorization and existing labels before any
+            # paid call. Native connector credentials are never exported here.
+            gateway = _gateway(cfg)
+            try:
+                identity = gateway.identity()
+                if not cfg.reminder_todoist_inbox_id or identity.get("inbox_project_id") != cfg.reminder_todoist_inbox_id:
+                    raise PermanentTodoistError("todoist_destination_not_verified")
+                old_identity = json.loads(operation["identity_json"]) if operation["identity_json"] else None
+                if old_identity is not None and old_identity != identity:
+                    raise PermanentTodoistError("todoist_account_changed")
+                available_labels = gateway.label_catalog()
+            except (RetryableTodoistError, PermanentTodoistError):
+                raise ReminderRetryable("reminder_authorization_pending") from None
+            _update(cfg.ledger_path, request_id, identity_json=json.dumps(identity))
+            operation["identity_json"] = json.dumps(identity)
+            try:
+                reservation = budget.reserve(request_id, binding, cfg.reminder_model)
+            except BudgetBlocked:
+                raise ReminderRetryable("reminder_budget_pending") from None
+            def settle_usage(usage):
+                budget.settle(reservation.reservation_id, usage["input_tokens"], usage["output_tokens"], cfg.reminder_model, "default")
             try:
                 proposal = reminder_ai.interpret(
                     payload["capture"]["text"], payload.get("created_at"),
                     api_key=api_key, model=cfg.reminder_model, timeout=cfg.reminder_ai_timeout,
+                    available_labels=available_labels, on_usage=settle_usage,
                 )
-                validated = reminder_ai.validate(proposal, payload.get("created_at"), now())
+                validated = reminder_ai.validate(proposal, payload.get("created_at"), now(), available_labels=available_labels)
             except reminder_ai.InterpretationUnavailable as exc:
                 if str(exc) in {"interpreter_refused", "interpreter_incomplete", "interpreter_invalid_output", "interpreter_invalid_schema", "invalid_capture_text"}:
                     response = _no_write(payload, question="No pude interpretar la captura completa. Indica una sola tarea con fecha y hora claras en Bogotá.")
@@ -172,16 +232,18 @@ def execute(payload: dict, cfg: Any, *, now: Any) -> dict:
                 response = _no_write(payload, rejected=validated["status"] == "unsupported", question=validated.get("question"))
                 _update(cfg.ledger_path, request_id, status="terminal", response_json=json.dumps(response, ensure_ascii=False))
                 return response
-            plan = {"title": validated["title"], "due": validated["due"]}
+            plan = {"title": validated["title"], "due": validated["due"], "labels": validated["labels"]}
             # This commit precedes even the read-only Todoist preflight. Retrying
             # must reuse the exact plan and must never re-anchor a relative date.
             _update(cfg.ledger_path, request_id, status="ready", plan_json=json.dumps(plan, ensure_ascii=False))
             operation["status"] = "ready"
 
-        todoist_token = _token(cfg.reminder_todoist_token_file)
-        gateway = TodoistGateway(todoist_token, timeout=cfg.reminder_todoist_timeout)
+        gateway = gateway or _gateway(cfg)
         identity = json.loads(operation["identity_json"]) if operation["identity_json"] else None
+        if not cfg.reminder_todoist_inbox_id or (identity is not None and identity.get("inbox_project_id") != cfg.reminder_todoist_inbox_id):
+            raise ReminderRetryable("reminder_authorization_pending")
         dispatched = operation["status"] in {"writing", "uncertain"}
+        was_dispatched = dispatched
         try:
             if identity is None:
                 identity = gateway.identity()

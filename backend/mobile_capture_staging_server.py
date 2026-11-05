@@ -139,6 +139,10 @@ class Config:
     expense_helper: Path | None = None
     reminder_openai_key_file: Path | None = None
     reminder_todoist_token_file: Path | None = None
+    reminder_todoist_credentials_file: Path | None = None
+    reminder_todoist_inbox_id: str = ""
+    reminder_budget_path: Path | None = None
+    reminder_monthly_limit_usd: str = "0"
     reminder_provider: str = "openai"
     reminder_model: str = "gpt-6-luna"
     reminder_ai_timeout: float = 8.0
@@ -1678,14 +1682,15 @@ def execute_reminder_capture(
 ) -> dict[str, Any]:
     # Credentials are an explicit server gate; desktop connector credentials
     # never authorize this backend. There is no legacy helper fallback.
-    if cfg.reminder_openai_key_file is None or cfg.reminder_todoist_token_file is None:
+    if cfg.reminder_openai_key_file is None or (cfg.reminder_todoist_token_file is None and cfg.reminder_todoist_credentials_file is None):
         return planned
     try:
         return reminder_capture.execute(payload, cfg, now=reminder_dispatch_now)
     except reminder_capture.ReminderConflict:
         raise WriteExecutionError("request_id_conflict") from None
-    except reminder_capture.ReminderRetryable:
-        raise WriteExecutionError("reminder_pending_retry") from None
+    except reminder_capture.ReminderRetryable as error:
+        code = "reminder_configuration_pending" if str(error) in {"reminder_budget_pending", "reminder_configuration_unavailable", "reminder_authorization_pending"} else "reminder_pending_retry"
+        raise WriteExecutionError(code) from None
 
 
 def ledger_status_for_response(payload: dict[str, Any], response: dict[str, Any]) -> str:
@@ -1914,7 +1919,7 @@ class MobileCaptureHandler(BaseHTTPRequestHandler):
                 conn.commit()
             json_response(self, HTTPStatus.SERVICE_UNAVAILABLE, pending)
             return
-        except WriteExecutionError:
+        except WriteExecutionError as error:
             # A processing request may safely be retried: expense
             # operation ledgers are authoritative across uncertain
             # outcomes and prevent a second POST. Other adapters retain their
@@ -1930,7 +1935,7 @@ class MobileCaptureHandler(BaseHTTPRequestHandler):
                 HTTPStatus.BAD_GATEWAY,
                 {
                     "status": "error",
-                    "error": "write_adapter_failed",
+                    "error": ("reminder_configuration_pending" if str(error) == "reminder_configuration_pending" else "reminder_pending_retry") if reminder_route else "write_adapter_failed",
                     "request_id": request_id,
                     "domain": domain,
                 },
@@ -1968,6 +1973,10 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--reminder-openai-key-file", type=Path, default=os.getenv("MOBILE_CAPTURE_REMINDER_OPENAI_KEY_FILE"))
     parser.add_argument("--reminder-todoist-token-file", type=Path, default=os.getenv("MOBILE_CAPTURE_REMINDER_TODOIST_TOKEN_FILE"))
+    parser.add_argument("--reminder-todoist-credentials-file", type=Path, default=os.getenv("MOBILE_CAPTURE_REMINDER_TODOIST_CREDENTIALS_FILE"))
+    parser.add_argument("--reminder-todoist-inbox-id", default=os.getenv("MOBILE_CAPTURE_REMINDER_TODOIST_INBOX_ID", ""))
+    parser.add_argument("--reminder-budget-path", type=Path, default=os.getenv("MOBILE_CAPTURE_REMINDER_BUDGET_PATH"))
+    parser.add_argument("--reminder-monthly-limit-usd", default=os.getenv("MOBILE_CAPTURE_REMINDER_MONTHLY_LIMIT_USD", "0"))
     parser.add_argument("--reminder-provider", default=os.getenv("MOBILE_CAPTURE_REMINDER_PROVIDER", "openai"))
     parser.add_argument("--reminder-model", default=os.getenv("MOBILE_CAPTURE_REMINDER_MODEL", "gpt-6-luna"))
     parser.add_argument("--reminder-ai-timeout", type=float, default=float(os.getenv("MOBILE_CAPTURE_REMINDER_AI_TIMEOUT", "8")))
@@ -1993,6 +2002,10 @@ if __name__ == "__main__":
             expense_helper=args.expense_helper,
             reminder_openai_key_file=args.reminder_openai_key_file,
             reminder_todoist_token_file=args.reminder_todoist_token_file,
+            reminder_todoist_credentials_file=args.reminder_todoist_credentials_file,
+            reminder_todoist_inbox_id=args.reminder_todoist_inbox_id,
+            reminder_budget_path=args.reminder_budget_path,
+            reminder_monthly_limit_usd=args.reminder_monthly_limit_usd,
             reminder_provider=args.reminder_provider,
             reminder_model=args.reminder_model,
             reminder_ai_timeout=args.reminder_ai_timeout,

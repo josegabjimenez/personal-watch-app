@@ -6,9 +6,15 @@ public enum OutboxDeliveryFailure: Error, Equatable, LocalizedError, Sendable {
     case invalidResponse
     case unsafeResponse
     case unknown
+    case reminderPending
+    case reminderConfigurationPending
 
     public var errorDescription: String? {
         switch self {
+        case .reminderPending:
+            return "Recordatorio pendiente de verificar · reintenta esta captura"
+        case .reminderConfigurationPending:
+            return "Recordatorio pendiente · revisa la configuración o el límite de IA"
         case .http(401):
             return "HMAC rechazado · configura nuevamente desde el iPhone"
         case .http(let statusCode):
@@ -26,7 +32,7 @@ public enum OutboxDeliveryFailure: Error, Equatable, LocalizedError, Sendable {
 
     public var isTransientTransportFailure: Bool {
         switch self {
-        case .network:
+        case .network, .reminderPending, .reminderConfigurationPending:
             return true
         case .http(let statusCode):
             return statusCode == 502 || statusCode == 503 || statusCode == 504
@@ -37,6 +43,10 @@ public enum OutboxDeliveryFailure: Error, Equatable, LocalizedError, Sendable {
 
     public var storageCode: String {
         switch self {
+        case .reminderPending:
+            return "reminder_pending_verification"
+        case .reminderConfigurationPending:
+            return "reminder_configuration_pending"
         case .http(let statusCode):
             return "http_\(statusCode)"
         case .network(let code):
@@ -116,7 +126,7 @@ public actor OutboxDeliveryService {
                                          deliveryPath: .directHTTPS, response: response)
                 return response
             }
-            let failure = Self.classify(error)
+            let failure = Self.reminderPendingFailure(error, for: payload) ?? Self.classify(error)
             try? await store.markFailed(
                 requestID: payload.requestID,
                 message: failure.storageCode,
@@ -139,6 +149,24 @@ public actor OutboxDeliveryService {
         inactive.displayMessage = "Vista previa inactiva · consulta el estado del gasto"
         inactive.plan = CaptureResponsePlan(sideEffects: [], wouldWrite: false)
         return inactive
+    }
+
+    // An uncertain reminder must remain failed/retryable in the original
+    // outbox row. Use only fixed local copy from a strictly correlated error;
+    // never present an arbitrary error body's claims or mark a receipt sent.
+    static func reminderPendingFailure(_ error: Error, for payload: CapturePayloadV1) -> OutboxDeliveryFailure? {
+        guard payload.route == .reminder, isSafeRequest(payload), !payload.context.dryRun,
+              case WebhookClientError.unacceptableStatus(let status, let body) = error,
+              status == 502, body.utf8.count <= 4096,
+              let value = try? JSONSerialization.jsonObject(with: Data(body.utf8)) as? [String: String],
+              Set(value.keys) == Set(["status", "error", "request_id", "domain"]),
+              value["status"] == "error", value["request_id"] == payload.requestID,
+              value["domain"] == CaptureRoute.reminder.domain.rawValue else { return nil }
+        switch value["error"] {
+        case "reminder_pending_retry": return .reminderPending
+        case "reminder_configuration_pending": return .reminderConfigurationPending
+        default: return nil
+        }
     }
 
     private static func classify(_ error: Error) -> OutboxDeliveryFailure {

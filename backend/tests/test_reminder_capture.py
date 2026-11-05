@@ -37,7 +37,7 @@ def payload(text="Recuérdame llamar mañana a las 2 pm", request_id="synthetic-
 def proposal(**overrides):
     result = {"action": "create_reminder", "title": "Llamar", "timezone": "America/Bogota",
               "schedule": {"mode": "absolute", "date": "2026-10-30", "time": "14:00", "offset_minutes": None},
-              "question": None, "deadline": None, "recurrence": None, "custom_alert": None}
+              "question": None, "deadline": None, "recurrence": None, "custom_alert": None, "labels": []}
     result.update(overrides)
     return result
 
@@ -54,6 +54,9 @@ class FakeGateway:
 
     def identity(self):
         return IDENTITY.copy()
+
+    def label_catalog(self):
+        return ("On_Phone", "5_min")
 
     def reconcile(self, plan, command_uuid, identity, external_id=None):
         self.reconciliations += 1
@@ -86,7 +89,9 @@ class ReminderCaptureTests(unittest.TestCase):
         self.addCleanup(self.directory.cleanup)
         self.cfg = srv.Config(secret=b"synthetic-hmac", ledger_path=Path(self.directory.name) / "ledger.sqlite", host="127.0.0.1", port=0,
                               write_enabled=True, write_domains=frozenset({"aura.reminder_capture", "aura.grocery_capture"}),
-                              reminder_openai_key_file=Path("synthetic-openai"), reminder_todoist_token_file=Path("synthetic-todoist"))
+                              reminder_openai_key_file=Path("synthetic-openai"), reminder_todoist_token_file=Path("synthetic-todoist"),
+                              reminder_monthly_limit_usd="2", reminder_todoist_inbox_id="synthetic-inbox")
+        reminders.ReminderBudget(Path(str(self.cfg.ledger_path) + ".reminder-ai-budget.sqlite3"), monthly_limit_usd="2", now=lambda: NOW).initialize()
         srv.init_db(self.cfg.ledger_path)
         self.gateway = FakeGateway()
         self.clock = mock.patch.object(srv, "reminder_dispatch_now", return_value=NOW).start()
@@ -127,6 +132,34 @@ class ReminderCaptureTests(unittest.TestCase):
         self.assertNotIn("calendar", json.dumps(response).lower())
         self.assertNotIn("notion", json.dumps(response).lower())
 
+    def test_context_labels_are_frozen_with_exact_plan(self):
+        self.model.return_value = proposal(labels=["On_Phone", "5_min"])
+        self.execute(payload(text="Recuérdame llamar cinco minutos mañana a las 2 pm"))
+        self.assertEqual(self.gateway.posts[0][2]["labels"], ["5_min", "On_Phone"])
+        self.assertEqual(json.loads(self.operation()["plan_json"])["labels"], ["5_min", "On_Phone"])
+        self.assertEqual(self.model.call_args.kwargs["available_labels"], ("On_Phone", "5_min"))
+
+    def test_first_account_must_match_the_explicit_existing_inbox_pin(self):
+        self.cfg = replace(self.cfg, reminder_todoist_inbox_id="another-inbox")
+        with self.assertRaises(srv.WriteExecutionError): self.execute()
+        self.model.assert_not_called()
+        self.assertEqual(self.gateway.posts, [])
+
+    def test_todoist_authorization_precedes_paid_interpretation(self):
+        with mock.patch.object(self.gateway, "identity", side_effect=PermanentTodoistError("todoist_authorization_required")):
+            with self.assertRaises(srv.WriteExecutionError): self.execute()
+        self.model.assert_not_called()
+        budget_path = Path(str(self.cfg.ledger_path) + ".reminder-ai-budget.sqlite3")
+        with sqlite3.connect(budget_path) as conn:
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM reminder_ai_budget_attempts").fetchone()[0], 0)
+
+    def test_model_attempt_limit_never_dispatches_a_third_call(self):
+        self.model.side_effect = ai.InterpretationUnavailable("interpreter_unavailable")
+        for _ in range(3):
+            with self.assertRaises(srv.WriteExecutionError): self.execute()
+        self.assertEqual(self.model.call_count, 2)
+        self.assertEqual(self.gateway.posts, [])
+
     def test_payment_reminder_creates_only_a_task_without_expense_execution(self):
         self.model.return_value = proposal(title="Pagar el recibo")
         with mock.patch.object(srv, "run_expense_helper") as expense, mock.patch.object(srv, "run_aura_helper") as legacy:
@@ -159,6 +192,22 @@ class ReminderCaptureTests(unittest.TestCase):
         self.assertEqual(self.model.call_count, 1)
         self.assertEqual(len(self.gateway.posts), 1)
         self.assertEqual(len(self.gateway.remote), 1)
+
+    def test_main_ledger_restore_cannot_spend_again_or_duplicate_external_task(self):
+        backup = Path(self.directory.name) / "synthetic-before-reminder.sqlite"
+        with sqlite3.connect(self.cfg.ledger_path) as source, sqlite3.connect(backup) as saved:
+            source.backup(saved)
+        self.execute()
+        original_command = self.operation()["command_uuid"]
+        with sqlite3.connect(backup) as saved, sqlite3.connect(self.cfg.ledger_path) as restored:
+            saved.backup(restored)
+        with self.assertRaises(srv.WriteExecutionError): self.execute()
+        self.assertEqual(self.operation()["status"], "reconciliation_required")
+        self.assertEqual(self.operation()["command_uuid"], original_command)
+        with self.assertRaises(srv.WriteExecutionError): self.execute()
+        self.assertEqual(self.model.call_count, 1)
+        self.assertEqual(len(self.gateway.remote), 1)
+        self.assertEqual(len(self.gateway.posts), 1)
 
     def test_crash_after_post_reconciles_after_due_without_new_post(self):
         self.gateway.crash_after_post = True
@@ -209,9 +258,9 @@ class ReminderCaptureTests(unittest.TestCase):
         self.assertEqual(self.gateway.posts, [])
 
     def test_crash_after_interpretation_preserves_plan(self):
-        with mock.patch.object(self.gateway, "identity", side_effect=SystemExit):
+        with mock.patch.object(self.gateway, "create_or_reconcile", side_effect=SystemExit):
             with self.assertRaises(SystemExit): self.execute()
-        self.assertEqual(self.operation()["status"], "ready")
+        self.assertEqual(self.operation()["status"], "writing")
         self.model.return_value = proposal(title="changed")
         self.execute()
         self.assertEqual(self.model.call_count, 1)
@@ -307,6 +356,7 @@ class ReminderCaptureTests(unittest.TestCase):
         class QuietHandler(srv.MobileCaptureHandler):
             def log_message(self,*args): pass
         server=srv.ThreadingHTTPServer(("127.0.0.1",0),QuietHandler);server.cfg=self.cfg
+        self.server = server
         thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
         self.addCleanup(server.server_close);self.addCleanup(thread.join);self.addCleanup(server.shutdown)
         return f"http://127.0.0.1:{server.server_address[1]}/webhooks/mobile-capture-v1"
@@ -329,6 +379,22 @@ class ReminderCaptureTests(unittest.TestCase):
         code,saved=self.send(endpoint,payload());self.assertEqual(code,200);self.assertTrue(saved["write_committed"])
         code,replay=self.send(endpoint,payload());self.assertEqual(code,200);self.assertEqual(replay["status"],"duplicate")
         self.assertEqual(self.model.call_count,1);self.assertEqual(len(self.gateway.remote),1)
+
+    def test_budget_configuration_gate_retries_original_capture_after_setup(self):
+        self.cfg = replace(self.cfg, reminder_monthly_limit_usd="0")
+        endpoint = self.start_server()
+        code, response = self.send(endpoint, payload())
+        self.assertEqual(code, 502)
+        self.assertEqual(response["error"], "reminder_configuration_pending")
+        self.model.assert_not_called()
+        with sqlite3.connect(self.cfg.ledger_path) as conn:
+            self.assertEqual(conn.execute("SELECT status FROM mobile_capture_ledger").fetchone()[0], "processing")
+        self.cfg = replace(self.cfg, reminder_monthly_limit_usd="2")
+        self.server.cfg = self.cfg
+        code, response = self.send(endpoint, payload())
+        self.assertEqual(code, 200)
+        self.assertTrue(response["write_committed"])
+        self.assertEqual(self.model.call_count, 1)
 
     def test_invalid_signature_never_reaches_ai(self):
         self.assertEqual(self.send(self.start_server(),payload(),bad_signature=True)[0],401)
