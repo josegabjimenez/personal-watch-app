@@ -96,7 +96,9 @@ class FakeSocket:
 
 class TodoistAuthTests(unittest.TestCase):
     def setUp(self):
-        self.directory = tempfile.TemporaryDirectory(prefix="personal-watch-auth-test-", dir="/private/tmp")
+        self.directory = tempfile.TemporaryDirectory(
+            prefix="personal-watch-auth-test-", dir=Path(tempfile.gettempdir()).resolve(),
+        )
         self.addCleanup(self.directory.cleanup)
         self.path = Path(self.directory.name) / "credentials.json"
         self.store = auth.CredentialStore(self.path, now=lambda: NOW)

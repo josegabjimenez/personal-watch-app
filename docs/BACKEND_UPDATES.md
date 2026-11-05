@@ -62,15 +62,16 @@ python3 ops/deploy/build_bundle.py \
 `--verify-tests` runs the package's 16 offline checks against the actual generated
 historical runtime with synthetic helper/Notion fixtures. They cover partial batches,
 lost acknowledgements, restart, raw-body identity and missing paired state. CI also
-runs the unchanged historical backend tests and deployment regressions. Production
+runs the combined backend, deployment, historical installer, six-file AI upgrade
+and twelve-file reminder package regressions in separate Python processes. Production
 credentials exist only in the final, separately gated SSH job, never in build/test
 jobs. The code-only Actions artifact expires after three days and its digest is
 checked before the transport key is exposed.
 
 The legacy fixture pins an AST serialization produced by Python 3.9. CI uses an
-explicit Python 3.9 executable for this package check; Python 3.12 adds AST fields
+explicit Python 3.9 executable for the backend and package checks; Python 3.12 adds AST fields
 and cannot reproduce that fixture digest. The fixture and seal are unchanged.
-Automation/backend regressions still run on the runner's default interpreter.
+Deployment receiver regressions still run on the runner's default interpreter.
 This selects a CI toolchain only and does not change the VPS interpreter or settings.
 
 ## Atomic activation and compatible recovery
