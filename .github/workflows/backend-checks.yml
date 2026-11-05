@@ -22,19 +22,33 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - name: Synthetic backend regression
-        run: PYTHONPATH=backend python3 -m unittest discover -s backend/tests -p 'test_*.py'
-      - name: Release failure, rollback and concurrency regression
-        run: python3 -m unittest discover -s ops/deploy/tests -p 'test_*.py'
       - name: Match the sealed fixture's Python 3.9 AST representation
         id: legacy_python
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: '3.9'
           update-environment: false
+      - name: Synthetic backend regression
+        env:
+          LEGACY_PYTHON: ${{ steps.legacy_python.outputs.python-path }}
+          PYTHONDONTWRITEBYTECODE: '1'
+          PYTHONPATH: backend
+        run: |
+          "$LEGACY_PYTHON" -m unittest discover -s backend/tests -p 'test_*.py'
+      - name: Release failure, rollback and concurrency regression
+        run: python3 -m unittest discover -s ops/deploy/tests -p 'test_*.py'
       - name: Exact sealed historical grocery package and its offline regression
         env:
           LEGACY_PYTHON: ${{ steps.legacy_python.outputs.python-path }}
         run: |
-          git fetch --no-tags --depth=1 origin 1fe67948051f1d25140e13900d51275c498e0770
+          git fetch --no-tags --depth=1 origin 1fe67948051f1d25140e13900d51275c498e0770 f8738b9a1529c09a7a577550706d7fb876ea6f89 77885a5cc4d018b7e5b49266fd909e591078cf48
           "$LEGACY_PYTHON" ops/deploy/build_bundle.py --revision 1fe67948051f1d25140e13900d51275c498e0770 --verify-tests --output "$RUNNER_TEMP/sealed-grocery-review.json"
+      - name: Combined historical installer, grocery AI and reminder package regression
+        env:
+          LEGACY_PYTHON: ${{ steps.legacy_python.outputs.python-path }}
+          PYTHONDONTWRITEBYTECODE: '1'
+          PYTHONPATH: backend
+        run: |
+          "$LEGACY_PYTHON" -m unittest discover -s ops/hotfixes/grocery-multi-item -p 'test_*.py'
+          "$LEGACY_PYTHON" -m unittest discover -s ops/hotfixes/grocery-ai -p 'test_*.py'
+          "$LEGACY_PYTHON" -m unittest discover -s ops/hotfixes/reminder-ai -p 'test_*.py'
