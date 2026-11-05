@@ -41,7 +41,17 @@ The earlier `548a7ac4…11344af` artifact remains the pre-correction checkpoint.
 All 37 generated-package/runtime tests passed, and the new package was built and
 independently verified against that seal. No other runtime hash changed.
 
-This local setup does not install credentials on the server, enable reminders,
-alter the grocery runtime, grant a reminder allowance or create Todoist tasks.
-The local credential file remains ignored by Git. Provider authorization,
-server installation and observed phone/Watch delivery require separate evidence.
+## Observed authorization and server follow-up
+
+The corrected browser flow subsequently completed successfully on November 5.
+The callback exchanged the code and saved the dedicated local bundle. A separate
+read-only status check reported `configured: true`, `status: ready`, and exactly
+`data:read` plus `task:add`. The file was owned by the current user with mode
+`0600`, under a `0700` parent, and ignored by Git. No token value was printed.
+
+Jose then authorized autonomous server installation. The authenticated encrypted
+handoff, local-source retirement, server identity verification and actual runtime
+state are recorded separately in
+[REMINDER_SERVER_PREPARATION.md](REMINDER_SERVER_PREPARATION.md).
+Provider authorization, service installation, a saved Todoist task and observed
+phone/Watch delivery remain separate results.

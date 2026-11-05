@@ -1,5 +1,9 @@
 # Reminder package over accepted Mercado
 
+The plan and gates below record the implementation checkpoint. Jose's subsequent
+November 5 authorization, authenticated server preparation and observed runtime
+state are tracked in the [server preparation receipt](../../../docs/verification/2026-11-05/REMINDER_SERVER_PREPARATION.md).
+
 This package adds timed personal reminders to the recorded six-file historical Mercado release. It does **not** deploy the combined MVP server or use the obsolete four-file updater. The five grocery modules remain byte-identical. The historical server retains its Config, CLI arguments, HMAC functions, planners, grocery route gates and original HTTP method bodies; the builder adds only `import reminder_runtime`, private names for the original HTTP methods, and two thin wrappers. Non-reminder requests retain the original body and method path. Reminder execution has its own exact authority checks, short SQLite claims and per-request lock.
 
 Recorded baseline: source `f8738b9a1529c09a7a577550706d7fb876ea6f89`, manifest SHA256 `bad63273cc49f2f7ca7342adcd3bd7f6d6e00a9658a7682d40d53c96a6d3a281`, historical server SHA256 `309602498c2a9ccf3186e7c336ed9ff5cc2fe3b693866fc1fbfdb18c1b0d5100`. The owner last independently checked it on November 4; Jose accepted current Mercado use on November 5. This reminder work has not refreshed production state. A different installed baseline requires reconciliation rather than bypassing a hash check.
