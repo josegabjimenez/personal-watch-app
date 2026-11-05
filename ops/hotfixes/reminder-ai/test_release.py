@@ -45,7 +45,9 @@ class ReminderReleaseTests(unittest.TestCase):
         cls.reminder_modules = {name: (ROOT / "backend" / name).read_bytes() for name in build.REMINDER_MODULES}
 
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory(prefix="personal-watch-release-test-", dir="/private/tmp")
+        self.temp = tempfile.TemporaryDirectory(
+            prefix="personal-watch-release-test-", dir=Path(tempfile.gettempdir()).resolve(),
+        )
         self.addCleanup(self.temp.cleanup)
         self.directory = Path(self.temp.name)
         self.grocery = self.directory / "grocery-release"
