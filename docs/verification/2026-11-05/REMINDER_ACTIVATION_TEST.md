@@ -1,5 +1,10 @@
 # Reminder activation and first live test — November 5, 2026
 
+This is the historical first-test receipt. See the [approved additional test and
+current REST deployment](REMINDER_REST_LIVE_TEST.md) for the later successful
+task/replay and configured-alert verification. The first outcome remains
+uncertain and preserved.
+
 Jose explicitly requested enabling reminders and one live test, then approved
 a separate **USD2/month reminder allowance**. Mercado's allowance is unchanged.
 This is the app's admission budget, not a prepaid charge or an account-wide
