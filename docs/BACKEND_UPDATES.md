@@ -1,15 +1,19 @@
 # Manual updates for the sealed grocery package
 
 PR #2 supplies an offline-tested update mechanism for the existing VPS service.
-It remains **unmerged and inactive**. Push and PR events run synthetic checks;
+The mechanism remains **unconfigured and inactive**. Push and PR events run synthetic checks;
 they cannot deploy. The Mercado owner exclusively handles the separately approved
 live grocery rollout. This automation task does not install a receiver, change
 credentials/policies, dispatch a release workflow, restart the service or replay
 a capture. Personal use requires no App Store publication or paid Apple membership.
 
+## Current integration boundary
+
+The accepted Mercado service now has six runtime files and an independent persistent USD2 guard. The reminder candidate has twelve files and a separate zero-default budget. This updater's four-file profile cannot adopt or update either: ordinary status/deploy/rollback admission rejects them before service calls or application/configuration mutation. Receiver bookkeeping may create private directories or a lock. Explicit recovery of a pre-existing legacy transaction has a separate fail-safe boundary and can stop the unit on code drift; it is not an adoption/update path for newer packages. Code integration preserves that rejection; it does not relax hashes, update the package profile, install a receiver, set deployment variables/secrets or enable a workflow. Future activation needs a separately reviewed compatible profile and preservation of both budget witnesses and unknown operations.
+
 ## Exact release boundary
 
-The production package is the historical grocery-only release from merged
+This legacy automation profile targets the historical four-file grocery release from merged
 [PR #3](https://github.com/josegabjimenez/personal-watch-app/pull/3):
 
 - Package revision: `1fe67948051f1d25140e13900d51275c498e0770` (squash on

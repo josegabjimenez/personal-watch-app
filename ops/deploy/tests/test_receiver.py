@@ -149,6 +149,101 @@ class ReceiverTests(unittest.TestCase):
                     if private is not None:
                         self.assertNotIn(private, value)
 
+    def current_pinned_runtime(self, count):
+        """Read/compile public package sources; never import application code."""
+        repo = MODULE_PATH.parents[2]
+
+        def packager(name, path):
+            spec = importlib.util.spec_from_file_location(name, path)
+            module = importlib.util.module_from_spec(spec)
+            exec(compile(path.read_bytes(), str(path), "exec"), module.__dict__)
+            return module
+
+        prior = packager("_negative_compat_grocery_builder", repo / "ops/hotfixes/grocery-multi-item/build_release.py")
+        reminder = packager("_negative_compat_reminder_builder", repo / "ops/hotfixes/reminder-ai/build_release.py")
+        historical = prior.baseline_source(repo)
+        server = prior.overlay_server(historical, prior.OVERLAY.read_bytes())
+        baseline = reminder.baseline_manifest()
+        runtime = {reminder.SERVER: server}
+        runtime.update({name: (repo / "backend" / name).read_bytes() for name in reminder.GROCERY_MODULES})
+        self.assertEqual({name: digest(source) for name, source in runtime.items()}, baseline["artifacts"])
+        if count == 12:
+            runtime[reminder.SERVER] = reminder.overlay_server(server)
+            runtime.update({name: (repo / "backend" / name).read_bytes() for name in reminder.REMINDER_MODULES})
+            expected = reminder.load_manifest()
+        else:
+            self.assertEqual(count, 6)
+            expected = baseline
+        self.assertEqual(len(runtime), count)
+        self.assertEqual({name: digest(source) for name, source in runtime.items()}, expected["artifacts"])
+        return runtime
+
+    def assert_current_runtime_rejected_without_mutation(self, runtime, expected_code):
+        # Use the production four-file pins, not setUp's synthetic profile.
+        module = load_receiver()
+        config = copy.deepcopy(self.config)
+        config["package_profile"] = json.loads((MODULE_PATH.parent / "grocery-package.json").read_bytes())
+        receiver = module.Receiver(config)
+        for name, source in runtime.items():
+            (self.live_dir / name).write_bytes(source)
+        self.make_batch_journal()
+        with sqlite3.connect(self.batch_journal) as db:
+            db.execute("CREATE TABLE grocery_ai_budget_requests (request_id TEXT,status TEXT,reserved_nanodollars INTEGER)")
+            db.execute("INSERT INTO grocery_ai_budget_requests VALUES ('synthetic-grocery','reserved',318000000)")
+        reminder_budget = self.data / "reminder-ai-budget.sqlite3"
+        with sqlite3.connect(reminder_budget) as db:
+            db.execute("CREATE TABLE reservations (request_id TEXT,status TEXT)")
+            db.execute("INSERT INTO reservations VALUES ('synthetic-reminder','uncertain')")
+        for path in (Path(str(self.batch_journal) + ".ai-budget-initialized"),
+                     Path(str(reminder_budget) + ".reminder-budget-initialized")):
+            path.write_bytes(b"synthetic-persistent-budget-witness\n")
+        for database in (self.ledger, self.batch_journal, reminder_budget):
+            for suffix in ("-wal", "-shm"):
+                Path(str(database) + suffix).write_bytes(b"synthetic-private-paired-state\n")
+        (self.root / "service.conf").write_bytes(b"[Service]\nEnvironment=GROCERY_AI_ENABLED=1\n")
+        (self.root / "receiver-config.json").write_text(json.dumps(config, sort_keys=True))
+
+        def snapshot():
+            result = {}
+            for path in self.root.rglob("*"):
+                if path == self.state / ".lock":
+                    continue  # Receiver bookkeeping may create its own lock.
+                info = path.lstat()
+                content = path.read_bytes() if stat.S_ISREG(info.st_mode) else os.readlink(path) if stat.S_ISLNK(info.st_mode) else None
+                result[str(path.relative_to(self.root))] = (info.st_ino, info.st_uid, info.st_gid, info.st_mode, content)
+            return result
+
+        before = snapshot()
+        config_before = copy.deepcopy(config)
+        expanded = {"schema": 2, "revision": config["package_profile"]["package_revision"],
+                    "manifest_b64": receiver.manifest_b64,
+                    "files": {name: {"sha256": digest(source), "content_b64": base64.b64encode(source).decode()}
+                              for name, source in runtime.items()}}
+        requests = (
+            ({"action": "status"}, expected_code),
+            ({"action": "rollback", "release_id": "0" * 64, "expected_current": "0" * 64}, expected_code),
+            ({"action": "deploy", "bundle": expanded, "expected_current": "0" * 64}, "invalid_bundle"),
+        )
+        with contextlib.ExitStack() as stack:
+            spies = [stack.enter_context(mock.patch.object(receiver, name, side_effect=AssertionError("unexpected receiver side effect")))
+                     for name in ("service", "_install", "_stage", "_snapshot", "_write", "_inhibit", "_switch",
+                                  "running_identity", "check_health", "_external_helper")]
+            for request, code in requests:
+                with self.subTest(action=request["action"]):
+                    with self.assertRaisesRegex(module.ReleaseError, "^" + code + "$"):
+                        receiver.handle(request)
+                    for spy in spies:
+                        spy.assert_not_called()
+                    self.assertEqual(snapshot(), before)
+                    self.assertEqual(config, config_before)
+                    self.assertFalse(self.entry.is_symlink())
+
+    def test_accepted_six_file_runtime_is_rejected_before_mutation(self):
+        self.assert_current_runtime_rejected_without_mutation(self.current_pinned_runtime(6), "invalid_bundle")
+
+    def test_twelve_file_reminder_runtime_is_rejected_before_mutation(self):
+        self.assert_current_runtime_rejected_without_mutation(self.current_pinned_runtime(12), "unrecognized_live_code")
+
     def test_exact_four_file_package_is_staged_and_entry_switch_is_atomic(self):
         self.compatible_baseline()
         before = self.data_snapshot()

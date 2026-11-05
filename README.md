@@ -154,3 +154,7 @@ Still required before broader production writes:
 ## License
 
 MIT — see [`LICENSE`](LICENSE).
+
+## Manual backend updater
+
+[The reviewed updater](docs/BACKEND_UPDATES.md) remains unconfigured and inactive. Its immutable profile targets a historical four-file grocery package; it safely rejects the currently accepted six-file Mercado runtime and twelve-file reminder candidate. Merging its source enables synthetic checks only. A new compatible profile and explicit activation are separate decisions.
