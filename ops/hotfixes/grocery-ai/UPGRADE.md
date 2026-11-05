@@ -66,6 +66,12 @@ health. It sends no capture, provider request or grocery test item. Reports
 contain fixed codes and aggregate counts, without private paths, dictations,
 request IDs, key contents or raw exception text.
 
+Post-start validation allows up to four seconds of readiness waiting for an
+inactive service, incomplete process metadata or transient pre-exec arguments.
+Every strict comparison still runs after readiness. This is not a hard overall
+wall-clock bound: individual systemd snapshots retain their own command timeout.
+Persistent arguments or other configuration/runtime drift still fail closed.
+
 If a failure occurs before budget initialization, the installer resumes the
 verified unchanged baseline when safe. Once initialization starts, a failure
 leaves this unit stopped and reports `attention`; an incomplete marker, newer
@@ -73,6 +79,13 @@ budget state and any installed compatible code are retained. Recovery must keep
 v2/budget-aware code and the existing data. Never restore either database or
 restart the old four-file writer over newer state. The installer intentionally
 does not automate that unsafe fallback.
+
+The first Luna deployment is recorded in
+`docs/verification/2026-11-04/GROCERY_LUNA_BUDGET.md`. It required compatible
+recovery after an immediate post-start argument check failed. Once the six-file
+runtime and budget are present, do not rerun this four-file-predecessor upgrader
+or restore its data backups as a shortcut. Recovery must verify the target
+runtime, preserved configuration, both backups and existing budget history.
 
 After successful installed-hash/configuration/HTTPS readback, the authorized
 synthetic provider check uses the actual installed runtime and the same budget

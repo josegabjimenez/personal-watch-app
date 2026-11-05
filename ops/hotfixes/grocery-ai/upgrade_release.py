@@ -666,7 +666,20 @@ class Upgrader:
         sync_directory(destination.parent)
 
     def _verify_started(self, runtime, *, target):
-        current = self._runtime(self.controller.snapshot(), target=target)
+        # Type=simple can report running before exec has populated /proc. Retry
+        # only those startup observations; every strict comparison stays below.
+        deadline = self.monotonic() + 4
+        while True:
+            try:
+                current = self._runtime(self.controller.snapshot(), target=target)
+                break
+            except UpgradeError as error:
+                if error.code not in {"service_inactive", "service_arguments", "service_metadata"}:
+                    raise
+                remaining = deadline - self.monotonic()
+                if remaining <= 0:
+                    raise
+                self.sleep(min(0.1, remaining))
         if (current.snapshot.argv != runtime.snapshot.argv
                 or current.snapshot.working_directory != runtime.snapshot.working_directory
                 or current.snapshot.execution_fingerprint != runtime.snapshot.execution_fingerprint

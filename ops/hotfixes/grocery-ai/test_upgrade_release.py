@@ -324,6 +324,88 @@ class UpgradeTests(unittest.TestCase):
             self.assertEqual((self.runtime / name).read_bytes(), raw)
         self.assertTrue(self.marker.exists())
 
+    def test_restart_transient_pre_exec_arguments_waits_for_verified_runtime(self):
+        installer = self.upgrader()
+        original_argv = self.controller.argv
+        self.controller.on_start = lambda: setattr(self.controller, "argv", ("/usr/lib/systemd/systemd",))
+        def ready(_):
+            self.controller.argv = original_argv
+        installer.sleep = mock.Mock(side_effect=ready)
+        report = installer.apply(initialize=True)
+        self.assertEqual(report["status"], "installed")
+        installer.sleep.assert_called_once_with(0.1)
+        self.assertEqual(self.controller.events, ["stop", "reload", "start"])
+        self.assertTrue(self.controller.active)
+        self.assertEqual(self.initializer_calls, 1)
+        self.assertTrue(self.marker.exists())
+        self.assert_report_private(report)
+
+    def test_restart_transient_inactive_and_snapshot_metadata_waits(self):
+        installer = self.upgrader()
+        snapshot = self.controller.snapshot
+        observations = iter(("inactive", "metadata", "ready"))
+        def starting_snapshot():
+            current = snapshot()
+            if "start" not in self.controller.events:
+                return current
+            observation = next(observations)
+            if observation == "inactive":
+                return replace(current, active=False, pid=0)
+            if observation == "metadata":
+                raise upgrade.UpgradeError("service_metadata")
+            return current
+        self.controller.snapshot = starting_snapshot
+        installer.sleep = mock.Mock()
+        report = installer.apply(initialize=True)
+        self.assertEqual(report["status"], "installed")
+        self.assertEqual(installer.sleep.call_args_list, [mock.call(0.1), mock.call(0.1)])
+        self.assertTrue(self.controller.active)
+
+    def test_restart_persistent_bad_arguments_deadline_stops_and_retains_marker(self):
+        installer = self.upgrader()
+        self.controller.on_start = lambda: setattr(self.controller, "argv", ("/usr/lib/systemd/systemd",))
+        elapsed = 0.0
+        def advance(seconds):
+            nonlocal elapsed
+            elapsed += seconds
+        installer.monotonic = lambda: elapsed
+        installer.sleep = mock.Mock(side_effect=advance)
+        report = installer.apply(initialize=True)
+        self.assertEqual(report["code"], "compatible_runtime_required")
+        self.assertEqual(report["cause"], "service_arguments")
+        self.assertTrue(report["unit_stopped"])
+        self.assertTrue(report["budget_marker_retained"])
+        self.assertFalse(self.controller.active)
+        self.assertEqual(self.controller.events, ["stop", "reload", "start", "stop"])
+        self.assertEqual(elapsed, 4)
+        self.assertTrue(all(0 < call.args[0] <= 0.1 for call in installer.sleep.call_args_list))
+        self.assertEqual(self.initializer_calls, 1)
+        self.assertTrue(self.marker.exists())
+        self.assertEqual(self.ledger.read_bytes(), self.original_parent)
+        for name, raw in self.target.items():
+            self.assertEqual((self.runtime / name).read_bytes(), raw)
+        self.assert_report_private(report)
+
+    def test_restart_nontransient_runtime_drift_fails_without_waiting(self):
+        installer = self.upgrader()
+        self.controller.on_start = lambda: self.entrypoint.write_text("# unexpected runtime drift\n")
+        installer.sleep = mock.Mock()
+        report = installer.apply(initialize=True)
+        self.assertEqual(report["cause"], "runtime_drift")
+        installer.sleep.assert_not_called()
+        self.assertFalse(self.controller.active)
+        self.assertTrue(self.marker.exists())
+
+    def test_restart_valid_but_changed_arguments_fail_strict_comparison_without_waiting(self):
+        installer = self.upgrader()
+        self.controller.on_start = lambda: setattr(self.controller, "argv", self.controller.argv + ("--unexpected",))
+        installer.sleep = mock.Mock()
+        report = installer.apply(initialize=True)
+        self.assertEqual(report["cause"], "service_changed")
+        installer.sleep.assert_not_called()
+        self.assertFalse(self.controller.active)
+        self.assertTrue(self.marker.exists())
+
     def test_restart_environment_drift_stops_unit(self):
         self.controller.on_start = lambda: setattr(self.controller, "environment", self.controller.environment + (("UNEXPECTED", "value"),))
         report = self.upgrader().apply(initialize=True)

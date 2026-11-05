@@ -1,9 +1,12 @@
 # Mercado: AI interpretation for review
 
 Jose approved the grocery-only Luna rollout and USD 2/month application budget
-on 4 November 2026. Account eligibility/credit and secure key provisioning are
-being handled by the coordinator; this document does not claim them verified.
-Installation readiness must be established by the current verification record.
+on 4 November 2026. The sealed six-file runtime is now installed and active;
+hashes, configuration, preserved data, the budget and grocery-only HTTPS passed
+live verification. Semantic verification is **partial**: explicit missing intent
+passed, while the compound smoke case failed and a distinct comma variant asked
+for clarification. Physical Watch acceptance remains pending. See the
+[dated evidence](verification/2026-11-04/GROCERY_LUNA_BUDGET.md).
 Jose's
 latest Mercado tests failed acceptance; the exact failed dictations have been
 requested and remain pending. Synthetic provider fixtures validate our contract
@@ -52,7 +55,7 @@ requests stop rather than silently rematch.
 Lost mutation acknowledgements use the existing read-only reconciliation by
 acknowledged ID; a missing ID never authorizes another mutation.
 
-## Approved Luna setup and remaining key handoff
+## Approved Luna setup
 
 The repository already contains an OpenAI Responses adapter for held reminders.
 This grocery module uses the same public API pattern independently and imports
@@ -69,9 +72,9 @@ confirms that the output limit includes reasoning and other non-visible tokens.
 Model output still undergoes local validation.
 
 Luna, the USD 2 budget, scoped installation/configuration and one-service restart
-are approved. Activation requires actual usable API access plus the reviewed
-release and verified data/code backups. Eligibility for a Pro API-credit benefit
-and actual claimed credit/account access remain separate checks. No merge,
+are approved. The rollout verified the reviewed release, paired data/code backups,
+private-file metadata and usable API access. Account-benefit details stay outside
+this technical record. No merge,
 Reminder/Todoist activation, expense or household-control change is authorized.
 
 Only these grocery-specific process environment settings are read:

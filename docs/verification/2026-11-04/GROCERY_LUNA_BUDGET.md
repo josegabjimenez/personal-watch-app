@@ -7,19 +7,60 @@ assumed. Reminder/Todoist, expenses/Firefly, HA and general capture remain held.
 
 ## Current state
 
-Code, offline tests, reviewed release and operator tools are prepared. **Not
-installed or activated yet; no live Luna request has been made.** The coordinator
-owns account eligibility/credit verification and secure key provisioning. It
-reported that OpenAI passkey verification still needs the human; no server key
-path/status has been supplied to this execution. ChatGPT Pro is user-confirmed,
-but eligibility, claimed credit, balance and usable API access are not verified
-here. No desktop or held reminder credential was discovered or reused.
+**Installed and active; semantic verification is partial.** The exact six-file
+runtime from commit `f8738b9a1529c09a7a577550706d7fb876ea6f89` was built and
+verified on the VPS, installed with the same seal below, and verified again in
+the running service. HTTPS returned healthy `allowlisted-write` with only
+`aura.grocery_capture`. The existing service owner was inactive before mutation.
 
-A read-only HTTPS check of the existing personal endpoint returned healthy
-`allowlisted-write` with only `aura.grocery_capture`. The previous live-service
-owner was idle. This confirms baseline availability, not new-code installation,
-file hashes or AI readiness. No server code, service, configuration or grocery
-data was mutated in these checks.
+Jose explicitly approved encrypted transfer through the authenticated Hostinger
+Web Console when the Mini had no usable SSH identity. Only the newly provisioned
+key from its approved local destination was used. A server-only temporary RSA
+envelope protected the transfer; the raw key never appeared in commands, chat,
+Git or logs. The target ordinary private file passed root ownership/mode checks;
+the temporary private encryption material was removed. No SSH access or policy
+was added, and held integration credentials were not discovered or reused.
+
+Three small synthetic provider calls were made without helper/Notion/grocery
+writes. The explicit-missing case passed. The original compound smoke failed;
+a distinct comma diagnostic returned `needs_input`. These results do not establish
+compound interpretation accuracy or physical Watch acceptance.
+
+## Live installation and recovery
+
+Read-only preflight passed before installation. The upgrader verified backups of
+the four previous code files and both SQLite files, then initialized the budget
+while stopped and installed all six target files. Its immediate post-start check
+reported `service_arguments` and deliberately stopped the unit, retaining the
+new code, budget marker and data. No old writer or database restore was used.
+
+A separately reviewed compatible recovery checked all six target hashes, the
+exact grocery drop-in, source/paired-database backup hashes and integrity, legacy
+table contents, data identities, private-file metadata and unchanged base
+configuration. It bound those checks to the actual service entrypoint and ledger,
+held the operator lock, started only `hermes-mobile-capture.service`, waited for a
+valid target snapshot and verified strict grocery-only HTTPS. The service is
+active. No data history or allowance was reset.
+
+The precise transient process snapshot was not retained. `Type=simple` and the
+immediate snapshot path exposed a readiness gap; the operator now waits for the
+three bounded transient startup observations before running every original strict
+comparison. That correction changes operator code only; the installed six-file
+runtime and its seal are unchanged.
+
+| Synthetic live check | Observed result | Latency |
+| --- | --- | --- |
+| Original compound/synonym fixture | Validated interpretation differed from expected; stopped original harness | 2,756 ms |
+| Distinct comma-separated diagnostic | `needs_input`, zero proposed items; stopped diagnostic | 1,747 ms |
+| Originally planned explicit-missing fixture | Correct source span and candidate; `apply` | 1,634 ms |
+| Ambiguous-variant fixture | Not dispatched | — |
+
+The first settled failure and every request identity remain preserved. The lost
+first proposal cannot establish its exact semantic cause; a changed diagnostic
+does not make the original smoke pass. No calls were retried by resetting IDs.
+Final guard accounting was 892,900 nanodollars charged, zero unsettled reservation
+and 1,999,107,100 nanodollars remaining in the Bogotá November allowance. This is
+the guard's conservative accounting, not a provider invoice.
 
 ## Implemented
 
@@ -64,14 +105,17 @@ the guard exhausted after a calendar rollover; no reset/repair API frees them.
 | Budget/provider/AI-engine focus | 88 tests OK |
 | Synthetic smoke harness | 6 tests OK |
 | Shared Apple core/outbox protocol | 70 tests passed, no app source change/install |
-| Upgrade fault/metadata/data-preservation contracts | 39 tests OK |
-| Independent focus including ops | 161 tests OK |
+| Upgrade fault/metadata/data-preservation contracts | 44 tests OK, including five startup-readiness/failure tests |
+| Complete operator/package/smoke suite after readiness correction | 81 tests OK |
+| Local encrypted transport contracts | 14 provisioning + 12 envelope tests OK, synthetic only |
+| Earlier independent focus including ops | 161 tests OK at frozen runtime delivery |
+| Final operator and compatible recovery review | No blocking findings after targeted corrections |
 
 Review caught and resolved current cache-write dimensions/30-minute pricing,
 volatile `systemctl ExecStart` fingerprint fields, smoke execution binding to
 verified bytes, the separate manifest/installed-files interface and month-crossing
-cost reporting. None of the offline tests prove a live provider account,
-semantic accuracy, service installation or physical Watch acceptance.
+cost reporting. Offline checks remain distinct from the live results above;
+physical Watch acceptance and compound semantic accuracy remain unestablished.
 
 Six-file seal:
 `bad63273cc49f2f7ca7342adcd3bd7f6d6e00a9658a7682d40d53c96a6d3a281`.
@@ -89,22 +133,18 @@ and opened on 4 November:
 - [Prompt caching](https://developers.openai.com/api/docs/guides/prompt-caching):
   explicit 30-minute retention, known cache-write usage dimensions and rate.
 
-## Exact remaining handoff
+## Remaining acceptance
 
-The coordinator supplies only the absolute server API-key file path plus private
-file/access status. It must be an ordinary non-symlink file, owned/readable by
-the existing service user, mode `0600`, at most 4,096 bytes. Do not paste the key
-or copy it to this checkout. No additional budget/restart approval is needed for
-the already approved scope.
+Jose can make a narrow intended Watch request for one product he actually needs,
+beginning with `me falta [producto]`, and verify its pending state in his list.
+No app reinstall is required. If clarification is returned, send a complete new
+dictation; contextual `sí`/`el primero` remains unsupported. Record the exact
+dictation and displayed result before interpreting physical acceptance.
 
-With that handoff and usable scoped server access, rerun exact preflight to
-establish current service arguments, hashes, helper/config metadata and absence
-of active/pending writers. Apply only the pinned six-file upgrade after its
-verified backups. Then verify installed hashes, scope, arguments and HTTPS,
-run the bounded synthetic smoke against the same journal, and let Jose submit
-his intended Watch grocery request. No app reinstall is required. Do not claim
-ready until these live checks actually pass; preserve both SQLite files and the
-budget marker, and never restore old allowance/history to bypass failure.
+The compound cases still require investigation; do not report the original smoke
+suite or general AI matching as accepted. Preserve both SQLite files and the
+budget marker. Never restore older allowance/history or reset an identity to
+repeat an uncertain call. No merge or held-domain activation occurred.
 
 See [current behavior/setup/rollout](../../GROCERY_AI_MATCHING.md) and the upgrade
 instructions in `ops/hotfixes/grocery-ai/UPGRADE.md`. The original 3 November
