@@ -1,0 +1,213 @@
+{
+  "schema_version": 1,
+  "base_commit": "970e14dfd6d3788996135a933cc0909c3049f076",
+  "rename_base_commit": "7f27389bed29e1b49a834692e380d1ad9c236dd8",
+  "historical_source_manifest": "docs/verification/2026-10-25/SOURCE_MANIFEST.json",
+  "provenance": "Personal Watch App branding of the existing reviewed three-action candidate. Installed identities and backend contracts retained; no data/signing migration or backend behavior change.",
+  "implementation_sources": [
+    {
+      "path": ".env.example",
+      "sha256": "deebc293d3791e55fbdf6a71c5ef37d7eddbfe6310bc10763c617c8256c16de0"
+    },
+    {
+      "path": ".gitignore",
+      "sha256": "8ed002fa8e17d10b68a91704618ab3625eead68a391b125922c66ee933d699de"
+    },
+    {
+      "path": "apple/PersonalWatchApp/Apps/Shared/PersonalWatchAppDefaults.swift",
+      "sha256": "0b1b915cc8405c456f4075603c12c6f116777c8c75276511ac785bb88fcf1e56"
+    },
+    {
+      "path": "apple/PersonalWatchApp/Apps/Shared/PersonalWatchAppIntents.swift",
+      "sha256": "92178bf9d8fafd9a5f7e4a53d69f89e58a920851f161baf2a71c065e2c3648af"
+    },
+    {
+      "path": "apple/PersonalWatchApp/Apps/Shared/PersonalWatchAppRuntime.swift",
+      "sha256": "67d123ecebe379224b8520e24e645313510afd564b11f27d719dfb87302e3950"
+    },
+    {
+      "path": "apple/PersonalWatchApp/Apps/Shared/PrivacyInfo.xcprivacy",
+      "sha256": "8459fb6681c51342e1343518bd18f81bdac42be3ba01bf51e1c4a485039190a6"
+    },
+    {
+      "path": "apple/PersonalWatchApp/Apps/Shared/WatchBootstrapMessage.swift",
+      "sha256": "e239580bd3503d37d0ac88c4a1908cf37dc8168e67809f14e50646076c1bdf24"
+    },
+    {
+      "path": "apple/PersonalWatchApp/Apps/Watch/PersonalWatchAppWatchApp.swift",
+      "sha256": "fdf6bd8edd0e1d5482929b350e65cc8a513df66dab020d298fab573e0a0a5e9d"
+    },
+    {
+      "path": "apple/PersonalWatchApp/Apps/Watch/WatchBootstrapReceiver.swift",
+      "sha256": "1e7e0e08380afc83b2b7f3901154692e98102dc5c80edefa95f18c9a2bff5d7a"
+    },
+    {
+      "path": "apple/PersonalWatchApp/Apps/Watch/WatchCaptureDeliveryCoordinator.swift",
+      "sha256": "8926950a7fb9bb2f3c5f0a0e9f2197ef9da8c1284bb3cc4da80998786e74493a"
+    },
+    {
+      "path": "apple/PersonalWatchApp/Apps/Watch/WatchCaptureView.swift",
+      "sha256": "d8534d9742b6797503c99a156569a599c3ad75c132575e70acf78e5663f07268"
+    },
+    {
+      "path": "apple/PersonalWatchApp/Apps/Watch/WatchContentView.swift",
+      "sha256": "511ee9185ec8915ae8b15c3913f9fef02db0300380641ee4b37e59ecea79bf9c"
+    },
+    {
+      "path": "apple/PersonalWatchApp/Apps/Watch/WatchHistoryView.swift",
+      "sha256": "f42e5d6b0303127acca7d2f9a7bb5df5e6b6cf4f1b5e70196a2f275d02a8ce28"
+    },
+    {
+      "path": "apple/PersonalWatchApp/Apps/iOS/IOSCaptureView.swift",
+      "sha256": "174447d156c71b1dc60f432b809e56150db12d6294e916141dc61c1587ab3838"
+    },
+    {
+      "path": "apple/PersonalWatchApp/Apps/iOS/IOSContentView.swift",
+      "sha256": "fbe0c77578770c9418c21e5241f61a212a449915aad724fbf06d1cade4a44c23"
+    },
+    {
+      "path": "apple/PersonalWatchApp/Apps/iOS/IPhoneWatchBootstrapCoordinator.swift",
+      "sha256": "43648ff11649ebedcdcfaf500117778fe2c4f246f10d80845474d6826119f13a"
+    },
+    {
+      "path": "apple/PersonalWatchApp/Apps/iOS/PersonalWatchAppiOSApp.swift",
+      "sha256": "f6ae01f1144a145dfc7a87a9ec8414ccc6c24bcef7811652179e89bcbf92143d"
+    },
+    {
+      "path": "apple/PersonalWatchApp/Config/Signing.xcconfig",
+      "sha256": "35bbd1b7c0824076d14e9c56cebff50888555961d8b3bfc647b21de050b0db02"
+    },
+    {
+      "path": "apple/PersonalWatchApp/Packages/PersonalWatchCore/Package.swift",
+      "sha256": "5b09d14092957cdab3318b76202c1a7dafaf7c5613aafcab8beb51dd25d1bdb2"
+    },
+    {
+      "path": "apple/PersonalWatchApp/Packages/PersonalWatchCore/Sources/PersonalWatchCore/CaptureEntities.swift",
+      "sha256": "4de5906bdbd700789cf00c0160507fd236ec081cb18cc6fabdbfb776e7016c05"
+    },
+    {
+      "path": "apple/PersonalWatchApp/Packages/PersonalWatchCore/Sources/PersonalWatchCore/CapturePayloadV1.swift",
+      "sha256": "3c778b96030ea63fa6689759f11fce2c97bd82606bd6b38fe5ea70217ef593e9"
+    },
+    {
+      "path": "apple/PersonalWatchApp/Packages/PersonalWatchCore/Sources/PersonalWatchCore/CaptureResponseV1.swift",
+      "sha256": "b4daec635b099b63e065ad2bac777d45fe9ad0c31b5feb739d900d8f84e62fe6"
+    },
+    {
+      "path": "apple/PersonalWatchApp/Packages/PersonalWatchCore/Sources/PersonalWatchCore/CaptureRoute.swift",
+      "sha256": "cc05dab0e1f23e806f35d62a3aaf1cab305400c84fa011a7d457a20b9d0df2ef"
+    },
+    {
+      "path": "apple/PersonalWatchApp/Packages/PersonalWatchCore/Sources/PersonalWatchCore/Configuration.swift",
+      "sha256": "28954f067d9586a6243e952e1f712f06c5e0a3625d7f0d6a95ec1cb73fd84a17"
+    },
+    {
+      "path": "apple/PersonalWatchApp/Packages/PersonalWatchCore/Sources/PersonalWatchCore/EndpointValidator.swift",
+      "sha256": "4318afa64a01014ca32260cb7f9b2862154bdf5742e92c6af381c3e9f8576232"
+    },
+    {
+      "path": "apple/PersonalWatchApp/Packages/PersonalWatchCore/Sources/PersonalWatchCore/HMACSigner.swift",
+      "sha256": "5f760f73ef8667113026ea7caff4e925e4fc22c26cf39ab194c211c1b730dfc4"
+    },
+    {
+      "path": "apple/PersonalWatchApp/Packages/PersonalWatchCore/Sources/PersonalWatchCore/KeychainRouteSecretStore.swift",
+      "sha256": "cce7d6ef95331b6c92c7d12fd382d9776e52493ebcf61cff99458087e40edcad"
+    },
+    {
+      "path": "apple/PersonalWatchApp/Packages/PersonalWatchCore/Sources/PersonalWatchCore/OutboxDeliveryService.swift",
+      "sha256": "cf7a56874e134706f9b795698ef513e67417b5b5d94a7d4326cd1fac626156aa"
+    },
+    {
+      "path": "apple/PersonalWatchApp/Packages/PersonalWatchCore/Sources/PersonalWatchCore/OutboxStore.swift",
+      "sha256": "0134a382e1a3a441cf3539e867d3b612e29b75cae325987f32b867915073f23d"
+    },
+    {
+      "path": "apple/PersonalWatchApp/Packages/PersonalWatchCore/Sources/PersonalWatchCore/QuickAction.swift",
+      "sha256": "aeaac352d1845998ded18828cf06aec6dba40c9d78428c58c1c5f1568332c391"
+    },
+    {
+      "path": "apple/PersonalWatchApp/Packages/PersonalWatchCore/Sources/PersonalWatchCore/WebhookClient.swift",
+      "sha256": "5da1627483d6f7e7af24a4916adef23ec2b4185590a4e8364af6499fc91f2a41"
+    },
+    {
+      "path": "apple/PersonalWatchApp/Packages/PersonalWatchCore/Sources/PersonalWatchCore/WebhookHeaders.swift",
+      "sha256": "6690c45028ee03ca5ea96341060adecbabb49aefc0933a6579adb4ab79148d9f"
+    },
+    {
+      "path": "apple/PersonalWatchApp/Packages/PersonalWatchCore/Tests/PersonalWatchCoreTests/OutboxDeliveryServiceTests.swift",
+      "sha256": "2f601c6117568c7e05101788107305f4dcbbac498a389ce6f1ed8aad05758518"
+    },
+    {
+      "path": "apple/PersonalWatchApp/Packages/PersonalWatchCore/Tests/PersonalWatchCoreTests/OutboxSafetyTests.swift",
+      "sha256": "a2e879331040714ba32ec2556b1d767c91786fa8334c35304ec969c12bfc3b22"
+    },
+    {
+      "path": "apple/PersonalWatchApp/Packages/PersonalWatchCore/Tests/PersonalWatchCoreTests/PersonalWatchCoreTests.swift",
+      "sha256": "84954d9680c99f25f99a3e81964eb796b51ae6f934d33fd54682614670e7038b"
+    },
+    {
+      "path": "apple/PersonalWatchApp/Tests/Host/PersonalWatchCoreTestHost.swift",
+      "sha256": "bca181a4a6f3285512183931693a216cc0c4613547f41e7198ba83f4ebe80d6a"
+    },
+    {
+      "path": "apple/PersonalWatchApp/UITests/PersonalWatchAppUITests.swift",
+      "sha256": "b3aa4dc8bfa1439b9ccecbb99dd6d2ab91db583132c948e801588609182ea3b2"
+    },
+    {
+      "path": "apple/PersonalWatchApp/project.yml",
+      "sha256": "a1817a1738193caaa53828315c27f4ac481a611a75aaf647ef4575ed604799e3"
+    },
+    {
+      "path": "backend/fixtures/aura-reminder-simple.json",
+      "sha256": "46e17ed1ad4ab6a080ac73a6d3e8901267a19a7b1d103cb9248a97cfed381e1a"
+    },
+    {
+      "path": "backend/fixtures/invalid-event.json",
+      "sha256": "9481a607164fbaab7d1006c519387e1a23a4ef782fd463578d25008830969a08"
+    },
+    {
+      "path": "backend/fixtures/megan-expense-simple.json",
+      "sha256": "ed21ae581550393d4d39165c551f037b906053b169a25e6ea2bf24b7595badca"
+    },
+    {
+      "path": "backend/mobile-capture-v1-webhook-prompt.md",
+      "sha256": "bdb828e28add6ca19bc54efbcc207262ca5bbdcb80b6ecacb3154faa0e40213a"
+    },
+    {
+      "path": "backend/mobile_capture_staging_server.py",
+      "sha256": "2563cb2e1b27ad8d6a56a4eb997523b91bc7d99d8d88b9f6c9bbe74873288ac1"
+    },
+    {
+      "path": "backend/scripts/mobile_expense_capture.py",
+      "sha256": "9b7eb758bffa1e9620d4cc0b043f24cec6455ec134197db02525819580aee0f3"
+    },
+    {
+      "path": "backend/scripts/sign_and_post_mobile_capture.py",
+      "sha256": "4d7c6be79e938605beb8e26aa893c8bb3040a2fc33d0052b637347b02fe5a5c2"
+    },
+    {
+      "path": "backend/systemd/hermes-mobile-capture.service.example",
+      "sha256": "eeeccfb149311199e0996585f7d311f8392a8ae7f0a033ffa488d88bfab6a12e"
+    },
+    {
+      "path": "backend/tests/test_mobile_capture_staging_server.py",
+      "sha256": "15f0062c39d23481fd39f238cfd1c1dbe46fb93e16cfea032ba6de5cb6d1de9b"
+    },
+    {
+      "path": "backend/tests/test_mobile_expense_capture.py",
+      "sha256": "3ea3e3149f83152bc592224495018eb407e065ef1e0618b8fb78da0a0a2f4c08"
+    },
+    {
+      "path": "backend/tests/test_mvp_regressions.py",
+      "sha256": "d5e516385d52ea1dc99190f47f084a113faff44230d157b296211b6191fbe0b0"
+    },
+    {
+      "path": "scripts/freeze_mvp_candidate.py",
+      "sha256": "b0c41986b4b992463c1348cd0ca04c54206260b94a7138fe9c1c0310bb18ce4c"
+    },
+    {
+      "path": "scripts/verify_mvp.sh",
+      "sha256": "12290478a952791450e359f516ee8c225ff05d8623ec652bfae67c6dfe701c51"
+    }
+  ]
+}

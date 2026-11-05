@@ -1,0 +1,32 @@
+{
+  "date": "2026-11-02",
+  "merged_implementation_pr": "https://github.com/josegabjimenez/personal-watch-app/pull/3",
+  "merge_commit": "1fe67948051f1d25140e13900d51275c498e0770",
+  "base_branch": "feat/hermes-personal-mvp",
+  "installer_sha256": "0b4f5636dfd64b0696a4d08558bbc8ff7ecd0ddb2a1bbe416c661c3c6b5bc8df",
+  "manifest_sha256": "9d34903345cac05cf695bc2839640e9aa9c773dd7a7261e6d5de0d7159a21f0e",
+  "installer_tests": {
+    "passed": 24,
+    "total": 24,
+    "independent_repeat_passed": 24,
+    "remaining_findings": 0
+  },
+  "remote_preflight": "preflight_ok",
+  "remote_package_hashes_verified": true,
+  "activation": "blocked_before_execution",
+  "block_source": "automatic approval review",
+  "block_reason": "Merge/continue instruction did not explicitly authorize live file replacement, backups and service stop/restart.",
+  "rejected_action_retried": false,
+  "after_block": {
+    "old_backend_unchanged": true,
+    "service_active": true,
+    "https_health_ok": true,
+    "release_backup_created": false
+  },
+  "service_restarted": false,
+  "capture_submitted_or_replayed": false,
+  "data_restored": false,
+  "app_reinstalled": false,
+  "ai_todoist_hold": true,
+  "next_gate": "Explicit human authorization for the exact four-file installation, verified backup and intended unit stop/start; then fresh guarded preflight."
+}

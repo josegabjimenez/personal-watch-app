@@ -1,5 +1,7 @@
 # Brief técnico Pipo — App nativa iOS + watchOS para Hermes/Siri AI
 
+> **Historical research brief.** Names, sample payloads and proposed actions below belong to the earlier planning stage. The current product is **Personal Watch App** with [three-action MVP scope](../PERSONAL_WATCH_APP_MVP.md); these proposals do not authorize additional actions or backend changes.
+
 **Objetivo:** MVP Watch-first para que Jose capture gastos, recordatorios/notas y preguntas rápidas hacia Hermes/Megan/Aura desde Apple Watch e iPhone, sin romper los Shortcuts/webhooks actuales que ya funcionan con Firefly, Notion y Calendar.
 
 **Restricción de ejecución:** este brief fue preparado en Linux. No se compiló Xcode ni simuladores; la verificación final debe ejecutarla Jose en macOS con Xcode y Apple Watch/iPhone reales.

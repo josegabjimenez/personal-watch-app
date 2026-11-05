@@ -1,0 +1,19 @@
+{
+  "activation": "Jose authorized grocery-only Luna/USD2 rollout; explicit budget initialization and private server key required",
+  "artifacts": {
+    "grocery_ai.py": "c0c82d9b77dd8b6582c63543d98c9ddde99ebe3aa00ebf69028784315e0dcd02",
+    "grocery_ai_budget.py": "27399dd0bfa0df47413e95e0475ce1b7151a445fbf8dd9457d93a9c6c055ffa8",
+    "grocery_capture.py": "2798d5663aa271393c75671c490089f83640008f289b1253b55ba71c5d789395",
+    "grocery_helper_adapter.py": "6553a574ff4b82fdc31533410522c22ea93f506d96771fb463988452ea214029",
+    "grocery_item_parser.py": "bf0097c86e43ca8b3349a96bc2ebf65f8d5d2e93eca4e9e3856ff6a2d134fdc7",
+    "mobile_capture_staging_server.py": "309602498c2a9ccf3186e7c336ed9ff5cc2fe3b693866fc1fbfdb18c1b0d5100"
+  },
+  "baseline_sha256": "f6eae64baaec83a04439919b9ffe54f49f4330ae60cbe55d54412e3e04041c38",
+  "external_helper_sha256": "24be164879b114487516b85b6811cce8239a4ad0744ec1e36bfc575a75a8e7e0",
+  "format_version": 1,
+  "journal_suffix": ".grocery.sqlite3",
+  "overlay_sha256": "2c6e4a775cb599436c829507b650acb681351697bbb19c32c2fbeb8c71d1c441",
+  "rollback": "Retain compatible frozen batch/item state; never replay uncertain work or restore one database independently",
+  "runtime_file_count": 6,
+  "scope": "Historical grocery-only Luna AI with persistent USD2 monthly guard; original server gates and unrelated functions unchanged"
+}

@@ -1,5 +1,7 @@
 # Historical Fable 5 Review Gates — Hermes Siri AI
 
+> **Historical record.** This document retains the earlier app name and its recorded candidate or planning stage. The current app is **Personal Watch App**; use [the current three-action MVP](PERSONAL_WATCH_APP_MVP.md) and [device setup](XCODE_DEVICE_SETUP.md) for current scope and readiness.
+
 > **Superseded for new reviews on 2026-07-17.** Jose requested that new reviews use the current GPT-5.6-sol model with Max Thinking instead of Fable 5. This document and prior Fable reviews remain only as historical decision records. Domain safety conditions recorded here are still requirements unless explicitly replaced.
 
 This project previously used “Fable 5” as a protocol for important decisions/reviews/audits.

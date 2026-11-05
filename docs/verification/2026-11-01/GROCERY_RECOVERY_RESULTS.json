@@ -1,0 +1,21 @@
+{
+  "version": "0.3.5",
+  "build": 8,
+  "device_source_commit": "52867ae",
+  "review_source_commit": "bc7d751",
+  "shared_tests_physical_source": 64,
+  "shared_tests_combined_review": 65,
+  "ios_ui_tests": 10,
+  "signed_build": "passed",
+  "physical_installed_and_plain_launched": {
+    "iphone": true,
+    "watch": true
+  },
+  "outboxes_and_endpoints_exactly_preserved": true,
+  "watch_blank_composer_visually_verified": true,
+  "outbox_unchanged_after_composer_action": true,
+  "agent_live_capture_posts": 0,
+  "backend_deployed": false,
+  "ai_integration_on_hold": true,
+  "live_delivery_acceptance": "not performed"
+}

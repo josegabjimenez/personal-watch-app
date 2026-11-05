@@ -1,5 +1,7 @@
 # Aura domain brief — Recordatorios, mercado, hogar y captura de vida
 
+> **Historical research brief.** Names, sample payloads and proposed actions below belong to the earlier planning stage. The current product is **Personal Watch App** with [three-action MVP scope](../PERSONAL_WATCH_APP_MVP.md); these proposals do not authorize additional actions or backend changes.
+
 **Objetivo:** definir el contrato funcional para que la app nativa Watch-first envíe capturas de Aura a Hermes sin romper el flujo Apple Watch/Shortcuts existente que ya escribe en Notion Tasks/Notes, la lista oficial de mercado y Google Calendar.
 
 **Alcance:** diseño/auditoría de dominio. Este documento **no ejecuta escrituras** en Notion, Calendar ni Home Assistant. La app Watch/iOS solo captura intención + contexto; Hermes/Aura conserva la lógica real de routing, escritura, calendario, idempotencia y resolución de ambigüedades.

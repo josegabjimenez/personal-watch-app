@@ -1,5 +1,7 @@
 ## Resultado global
 
+> **Historical research brief.** Names, sample payloads and proposed actions below belong to the earlier planning stage. The current product is **Personal Watch App** with [three-action MVP scope](../PERSONAL_WATCH_APP_MVP.md); these proposals do not authorize additional actions or backend changes.
+
 **APPROVED WITH CONDITIONS.** La arquitectura Watch-first es coherente para MVP, pero solo pasa Fable 5 si se endurecen antes de escribir acciones reales en Firefly/Notion/Calendar: HMAC real, `request_id` end-to-end, outbox local, pruebas en Apple Watch físico y migración sin romper Shortcuts legacy.
 
 ## Fable 5 audit — decisiones actuales

@@ -1,0 +1,87 @@
+{
+  "date": "2026-10-28",
+  "timezone": "America/Bogota",
+  "scope": "Personal Watch App rename of the existing three-action MVP",
+  "rename_base_commit": "7f27389bed29e1b49a834692e380d1ad9c236dd8",
+  "repository": "https://github.com/josegabjimenez/personal-watch-app",
+  "pull_request": "https://github.com/josegabjimenez/personal-watch-app/pull/1",
+  "repository_and_PR_identity_preserved": true,
+  "runtime": {
+    "model": "gpt-6.1-sol",
+    "effort": "ultra",
+    "approval_policy": "on-request",
+    "approvals_reviewer": "auto_review",
+    "sandbox": "workspace-write"
+  },
+  "checks": {
+    "backend_synthetic": {
+      "passed": 104,
+      "failed": 0
+    },
+    "swift_package": {
+      "passed": 58,
+      "failed": 0
+    },
+    "ios_simulator_core": {
+      "passed": 58,
+      "failed": 0
+    },
+    "ios_simulator_ui": {
+      "passed": 8,
+      "failed": 0
+    },
+    "ios_release_unsigned_build": "passed, Watch embedded",
+    "watchos_release_unsigned_build": "passed",
+    "project_and_schemes": "resolved",
+    "relative_markdown_links": "passed across all tracked Markdown documents",
+    "independent_compatibility_review": "no actionable findings",
+    "implementation_sources_pinned": 51
+  },
+  "built_metadata": {
+    "iOS": {
+      "display_name": "Personal Watch App",
+      "bundle_id_preserved": true,
+      "version_preserved": "0.3.4 (7)",
+      "intent_actions_and_provider_identity_preserved": true,
+      "intent_authentication_discovery_and_open_behavior_preserved": true,
+      "advertised_shortcuts": 3,
+      "shortcut_phrases_preserved": true,
+      "synthetic_endpoint_and_secret_excluded_from_release": true,
+      "privacy_tracking": false
+    },
+    "Watch": {
+      "display_name": "Personal Watch App",
+      "bundle_id_preserved": true,
+      "version_preserved": "0.3.4 (7)",
+      "intent_actions_and_provider_identity_preserved": true,
+      "intent_authentication_discovery_and_open_behavior_preserved": true,
+      "advertised_shortcuts": 3,
+      "shortcut_phrases_preserved": true,
+      "synthetic_endpoint_and_secret_excluded_from_release": true,
+      "privacy_tracking": false
+    }
+  },
+  "backend_scope": {
+    "python_behavior_AST_equivalent": true,
+    "expense_adapter_unchanged": true,
+    "environment_settings_unchanged": true,
+    "systemd_settings_except_description_unchanged": true,
+    "legacy_webhook_safety_rules_unchanged": true,
+    "AI_framework_or_dependency_added": false
+  },
+  "no_physical_device_or_provisioning_actions": true,
+  "renamed_candidate_installed": false,
+  "pending_Watch_installation": "unchanged from historical setup record",
+  "local_checkout_moved": false,
+  "Codex_saved_project_label_path": "coordinator reports no supported setter; unchanged",
+  "log_sha256": {
+    "backend.log": "2cf49c7f57e58909079981827ae8941e04a7a7bfb9bcb836f745d3df33e13bfb",
+    "swift.log": "d1bd55966020799c025b360185529f248a652ca847083d67c917eed477d68d0f",
+    "ios-build.log": "3cefb61925da5a1720996792261c0d4c9505fa1478dde0dcfbb37e129c399728",
+    "watch-build.log": "f2f588e1f0ac70f69f2218478de479805c1a073b39b76d53defb33dcca7fc043",
+    "project-list.json": "a594d61c319f801a2290ef7a4dc981d932d37322448f3f140038aa869692f83a",
+    "compatibility-checks.json": "5638e16d47cc444a94aa1c857cc13e504ec4fc82fb5b12a09763557d2b3d2d74",
+    "backend-scope-checks.json": "655dcc8f41198ddab28d2e65c9d3ee26966e0f7ada05b73a2749443e2b4585d2",
+    "ios-tests.log": "64bfd2de160ad492f8c89001ecf2d951abd138a48a50ac33cc08a48cc89f9136"
+  }
+}

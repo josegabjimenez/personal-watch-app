@@ -1,5 +1,7 @@
 # Backend staging plan — `/webhooks/mobile-capture-v1`
 
+> **Historical record.** This document retains the earlier app name and its recorded candidate or planning stage. The current app is **Personal Watch App**; use [the current three-action MVP](PERSONAL_WATCH_APP_MVP.md) and [device setup](XCODE_DEVICE_SETUP.md) for current scope and readiness.
+
 ## Current status
 
 Two staging surfaces now exist:

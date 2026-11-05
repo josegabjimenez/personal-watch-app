@@ -1,0 +1,38 @@
+{
+  "added_modules": [
+    "reminder_ai.py",
+    "reminder_ai_budget.py",
+    "reminder_capture.py",
+    "reminder_runtime.py",
+    "todoist_auth.py",
+    "todoist_reminders.py"
+  ],
+  "artifacts": {
+    "grocery_ai.py": "c0c82d9b77dd8b6582c63543d98c9ddde99ebe3aa00ebf69028784315e0dcd02",
+    "grocery_ai_budget.py": "27399dd0bfa0df47413e95e0475ce1b7151a445fbf8dd9457d93a9c6c055ffa8",
+    "grocery_capture.py": "2798d5663aa271393c75671c490089f83640008f289b1253b55ba71c5d789395",
+    "grocery_helper_adapter.py": "6553a574ff4b82fdc31533410522c22ea93f506d96771fb463988452ea214029",
+    "grocery_item_parser.py": "bf0097c86e43ca8b3349a96bc2ebf65f8d5d2e93eca4e9e3856ff6a2d134fdc7",
+    "mobile_capture_staging_server.py": "d0c8157badf694661c205a8dc775406b10552b25b7e9bf1f1da5595b831af9da",
+    "reminder_ai.py": "a7fca5bd3f1f63f764d0f9848fa6bc66d8c3b13510872cd910ddc7ec289aa106",
+    "reminder_ai_budget.py": "db7257c5fef90d583c09bc2d7acf6494355d61a8333774c8bbdbccd19a0eee0d",
+    "reminder_capture.py": "b2e3232914b2878174c51c6049278e3b0ab73f08221691250352758bf9582093",
+    "reminder_runtime.py": "dca7fecf1cc9341b5334b759af8e406d69db12764265244ddd8a0e88922cf29a",
+    "todoist_auth.py": "48009c343252c563a94b00df658d6034447abac98a8c3963667dfd59ed0e4257",
+    "todoist_reminders.py": "ebb3d44d99aeafe3558e2ea826de153845fd3e4b8fc12ddb1f073d1aa70fb2ab"
+  },
+  "baseline_artifacts": {
+    "grocery_ai.py": "c0c82d9b77dd8b6582c63543d98c9ddde99ebe3aa00ebf69028784315e0dcd02",
+    "grocery_ai_budget.py": "27399dd0bfa0df47413e95e0475ce1b7151a445fbf8dd9457d93a9c6c055ffa8",
+    "grocery_capture.py": "2798d5663aa271393c75671c490089f83640008f289b1253b55ba71c5d789395",
+    "grocery_helper_adapter.py": "6553a574ff4b82fdc31533410522c22ea93f506d96771fb463988452ea214029",
+    "grocery_item_parser.py": "bf0097c86e43ca8b3349a96bc2ebf65f8d5d2e93eca4e9e3856ff6a2d134fdc7",
+    "mobile_capture_staging_server.py": "309602498c2a9ccf3186e7c336ed9ff5cc2fe3b693866fc1fbfdb18c1b0d5100"
+  },
+  "external_helper_sha256": "24be164879b114487516b85b6811cce8239a4ad0744ec1e36bfc575a75a8e7e0",
+  "format_version": 1,
+  "grocery_manifest_sha256": "bad63273cc49f2f7ca7342adcd3bd7f6d6e00a9658a7682d40d53c96a6d3a281",
+  "runtime_file_count": 12,
+  "scope": "Reminder-only HTTP wrappers over the exact accepted grocery AI release; grocery modules and original server bodies preserved",
+  "server_change": "one reminder_runtime import; original GET/POST renamed; two thin delegation methods"
+}

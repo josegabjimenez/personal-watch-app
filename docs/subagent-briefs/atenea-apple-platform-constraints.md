@@ -1,5 +1,7 @@
 # Atenea — Apple platform constraints para app Watch-first de Hermes Agents
 
+> **Historical research brief.** Names, sample payloads and proposed actions below belong to the earlier planning stage. The current product is **Personal Watch App** with [three-action MVP scope](../PERSONAL_WATCH_APP_MVP.md); these proposals do not authorize additional actions or backend changes.
+
 **Fecha de consulta:** 2026-07-06  
 **Alcance:** app nativa iOS + watchOS para Jose; prioridad captura rápida desde Apple Watch con Siri/App Intents, dictado, botones rápidos y llamadas HTTPS a Hermes webhooks/API; Jose ya tiene Shortcuts existentes.  
 **Regla de rigor:** las versiones exactas se citan solo cuando salieron de Apple Developer docs consultadas. Las APIs nuevas por símbolo se deben revalidar en el SDK/Xcode objetivo antes de diseñar sobre ellas.

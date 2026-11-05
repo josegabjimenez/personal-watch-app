@@ -1,0 +1,9 @@
+{
+  "completed_count": 1,
+  "display_message": "Mercado: 1 de 3 confirmados · envío pendiente de revisión",
+  "domain": "aura.grocery_capture",
+  "error": "grocery_pending_review",
+  "request_id": "grocery-batch-contract",
+  "status": "needs_reconciliation",
+  "total_count": 3
+}

@@ -1,5 +1,7 @@
 ## Resultado del review — `mobile-capture-v1`
 
+> **Historical research brief.** Names, sample payloads and proposed actions below belong to the earlier planning stage. The current product is **Personal Watch App** with [three-action MVP scope](../PERSONAL_WATCH_APP_MVP.md); these proposals do not authorize additional actions or backend changes.
+
 ### Qué hice
 - Revisé `<PROJECT_ROOT>` y la configuración/CLI de Hermes Webhooks.
 - No modifiqué configuración ni reinicié gateway.

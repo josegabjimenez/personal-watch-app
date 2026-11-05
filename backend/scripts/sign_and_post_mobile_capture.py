@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Sign and POST Hermes mobile_capture.v1 fixtures to the local webhook gateway.
+"""Sign and POST Personal Watch App mobile_capture.v1 fixtures to the local gateway.
 
 Uses generic webhook HMAC V2:
   X-Webhook-Timestamp: <unix seconds>

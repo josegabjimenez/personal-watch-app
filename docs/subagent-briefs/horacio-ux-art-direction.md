@@ -1,4 +1,7 @@
 # Horacio UX / Art Direction Brief
+
+> **Historical research brief.** Names, sample payloads and proposed actions below belong to the earlier planning stage. The current product is **Personal Watch App** with [three-action MVP scope](../PERSONAL_WATCH_APP_MVP.md); these proposals do not authorize additional actions or backend changes.
+
 ## Hermes Agents — Apple Watch-first
 
 **Objetivo:** crear una experiencia espectacular, rápida y premium para capturar acciones hacia Hermes Agents desde la muñeca. El Watch no debe sentirse como “mini iPhone”; debe ser un **control remoto inteligente**: capturar, confirmar, enviar y salir.

@@ -1,5 +1,7 @@
 # Megan domain brief — Hermes Watch app expense capture
 
+> **Historical research brief.** Names, sample payloads and proposed actions below belong to the earlier planning stage. The current product is **Personal Watch App** with [three-action MVP scope](../PERSONAL_WATCH_APP_MVP.md); these proposals do not authorize additional actions or backend changes.
+
 **Dominio:** `megan.expense_capture`  
 **Contrato base:** `mobile_capture.v1`  
 **Alcance:** diseño/auditoría para app nativa iOS + watchOS Watch-first. No se escriben movimientos en Firefly desde este brief.  

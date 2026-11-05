@@ -1,4 +1,6 @@
-# Decision log — Hermes Siri AI
+# Decision log — Personal Watch App
+
+The product name is **Personal Watch App** as of October 28, 2026. Earlier entries retain their original architecture, backend integration names and compatibility identifiers. The [current three-action MVP](PERSONAL_WATCH_APP_MVP.md) governs active scope; older proposals do not enable general capture or additional write domains.
 
 ## D001 — App shape
 
