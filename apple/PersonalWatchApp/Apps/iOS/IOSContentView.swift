@@ -471,7 +471,7 @@ private struct LocalOutboxDiagnostics {
         sent = items.filter { $0.status == .sent }.count
         pending = items.filter { $0.status == .pending || $0.status == .sending }.count
         failed = items.filter { $0.status == .failed }.count
-        deliverable = items.filter { [.pending, .failed].contains($0.status) && $0.attempts < 5 }.count
+        deliverable = items.filter { !$0.isRetrySuppressed && [.pending, .failed].contains($0.status) && $0.attempts < 5 }.count
     }
 }
 

@@ -13,6 +13,11 @@ struct IOSCaptureView: View {
     @State private var pending: PendingExpense?
     @State private var queuedPayload: CapturePayloadV1?
     @State private var deliveryInFlight = false
+    @State private var showsReminderRetention = false
+    @State private var retainedReminders: [OutboxItem] = []
+    @State private var isCheckingConnection = false
+    @State private var connectionMessage: String?
+    @State private var connectionDiagnostic: String?
 
     private struct PendingExpense {
         let text: String
@@ -54,6 +59,15 @@ struct IOSCaptureView: View {
                     .accessibilityIdentifier("capture.send")
                     .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isBusy || deliveryInFlight)
 
+                    if action == .reminder, queuedPayload != nil {
+                        Button("Nuevo recordatorio") { showsReminderRetention = true }
+                            .disabled(isBusy)
+                            .accessibilityIdentifier("capture.newReminder")
+                        Text("Conserva el anterior en Historial antes de escribir una intención distinta.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+
                     if canStartAnotherGrocery {
                         Button("Otro artículo") {
                             startAnotherGrocery()
@@ -73,7 +87,49 @@ struct IOSCaptureView: View {
                 }
             }
 
+            if action == .reminder, !retainedReminders.isEmpty {
+                Section("Conservados en Historial de este iPhone") {
+                    ForEach(retainedReminders) { item in
+                        DisclosureGroup(item.payload.capture.text) {
+                            Text("Sin reintentos en este dispositivo · no cancela un posible registro en Todoist")
+                            Text("Capturado: \(item.payload.createdAt)")
+                            Text("ID: \(item.id)")
+                                .font(.caption.monospaced())
+                            Text("Estado del envío: \(retainedStatus(item.status))")
+                            Text("Intentos: \(item.attempts)")
+                            if let error = item.lastError {
+                                Text("Último error: \(error)")
+                                    .font(.caption.monospaced())
+                            }
+                        }
+                        .accessibilityIdentifier("history.retainedReminder.\(item.id)")
+                    }
+                }
+            }
+
             if action == .reminder {
+                Section("Conexión de este dispositivo") {
+                    Button {
+                        Task { await checkConnection() }
+                    } label: {
+                        if isCheckingConnection { ProgressView() }
+                        else { Label("Comprobar conexión", systemImage: "network") }
+                    }
+                    .disabled(isBusy || isCheckingConnection)
+                    .accessibilityIdentifier("capture.checkConnection")
+                    Text("Solo comprueba conexión; no envía ni reintenta capturas.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    if let connectionMessage {
+                        Text(connectionMessage)
+                            .accessibilityIdentifier("capture.connectionStatus")
+                    }
+                    if let connectionDiagnostic {
+                        Text(connectionDiagnostic)
+                            .font(.caption.monospaced())
+                            .foregroundStyle(.secondary)
+                    }
+                }
                 Section {
                     Text("Indica fecha y hora, por ejemplo: mañana a las 2 pm. Personal Watch App confirma la hora de Bogotá y si el aviso está verificado.")
                         .font(.footnote)
@@ -81,7 +137,19 @@ struct IOSCaptureView: View {
             }
         }
         .navigationTitle(action.title)
-        .task { await restore() }
+        .confirmationDialog("Conservar el recordatorio anterior", isPresented: $showsReminderRetention, titleVisibility: .visible) {
+            Button("Conservar y abrir nuevo") {
+                Task { await retainReminderAndOpenDraft() }
+            }
+            .accessibilityIdentifier("capture.retainReminder.confirm")
+            Button("Volver", role: .cancel) {}
+        } message: {
+            Text("Conserva su texto, fecha e identificador y detiene los reintentos de este dispositivo. No cancela un posible registro en Todoist. El nuevo borrador es para una intención distinta.")
+        }
+        .task {
+            await PersonalWatchAppRuntime.prepareSyntheticStateIfNeeded()
+            await restore()
+        }
     }
 
     private var prompt: String {
@@ -104,6 +172,70 @@ struct IOSCaptureView: View {
         queuedPayload = nil
         text = ""
         statusMessage = "El artículo anterior queda guardado · escribe un artículo distinto"
+    }
+
+    @MainActor
+    private func retainReminderAndOpenDraft() async {
+        guard action == .reminder, !isBusy, let original = queuedPayload else { return }
+        isBusy = true
+        defer { isBusy = false }
+        let store = FileOutboxStore(fileURL: PersonalWatchAppRuntime.outboxURL)
+        do {
+            let retained = try await store.retainReminderForReview(
+                requestID: original.requestID, now: ISO8601DateFormatter().string(from: Date())
+            )
+            retainedReminders = (try? await store.loadAll().filter { $0.payload.route == .reminder && $0.isRetrySuppressed }) ?? [retained]
+            openDistinctReminderDraft()
+        } catch {
+            // A late terminal receipt may win, but an unverified result or
+            // persistence failure must leave the original editor attached.
+            if let item = try? await store.loadAll().first(where: { $0.id == original.requestID }),
+               item.payload == original, item.status == .sent,
+               let response = item.lastResponse,
+               OutboxDeliveryService.isSafe(response: response, for: original) {
+                openDistinctReminderDraft()
+            } else {
+                statusMessage = "No pude conservar el recordatorio · el texto y su estado siguen aquí"
+            }
+        }
+    }
+
+    @MainActor
+    private func openDistinctReminderDraft() {
+        queuedPayload = nil
+        deliveryInFlight = false
+        text = ""
+        statusMessage = "Anterior conservado en Historial · escribe un recordatorio distinto"
+    }
+
+    private func retainedStatus(_ status: OutboxStatus) -> String {
+        switch status {
+        case .pending: return "Pendiente"
+        case .sending, .failed: return "Por verificar"
+        case .sent: return "Respuesta recibida"
+        case .cancelled: return "Cancelado local"
+        }
+    }
+
+    @MainActor
+    private func checkConnection() async {
+        guard action == .reminder, !isBusy, !isCheckingConnection else { return }
+        isCheckingConnection = true
+        connectionMessage = nil
+        connectionDiagnostic = nil
+        defer { isCheckingConnection = false }
+        do {
+            guard let credentials = try PersonalWatchAppRuntime.credentials() else {
+                connectionMessage = "Configuración pendiente · comprueba la app del iPhone"
+                return
+            }
+            let result = await PersonalWatchAppRuntime.checkServerConnection(baseURL: credentials.baseURL)
+            connectionMessage = result.message
+            connectionDiagnostic = result.diagnosticCode
+        } catch {
+            connectionMessage = "Configuración no disponible · comprueba la app del iPhone"
+            connectionDiagnostic = "configuration_unavailable"
+        }
     }
 
     @MainActor
@@ -171,7 +303,7 @@ struct IOSCaptureView: View {
                 text = canonical.capture.text
             } else {
                 pending = nil
-                if response.writeCommitted == true || canonical.context.userCancellation == true {
+                if response.writeCommitted == true || canonical.context.userCancellation == true || action == .reminder {
                     text = ""
                 }
             }
@@ -206,6 +338,7 @@ struct IOSCaptureView: View {
         do {
             let store = FileOutboxStore(fileURL: PersonalWatchAppRuntime.outboxURL)
             let items = try await store.loadAll()
+            retainedReminders = items.filter { $0.payload.route == .reminder && $0.isRetrySuppressed }
             if action == .expense,
                let item = try await store.loadPendingExpenseConfirmations().first,
                let response = item.lastResponse,
@@ -220,7 +353,8 @@ struct IOSCaptureView: View {
                     ? "Envío anterior sin resultado · verifica el gasto antes de volver a registrarlo"
                     : "Revisa el gasto antes de registrarlo"
             } else if let item = items.last(where: {
-                $0.payload.route == action.route && [.pending, .failed, .sending].contains($0.status)
+                $0.payload.route == action.route && !$0.isRetrySuppressed
+                    && [.pending, .failed, .sending].contains($0.status)
                     && $0.payload.context.userCancellation != true
             }) {
                 queuedPayload = item.payload
@@ -230,10 +364,12 @@ struct IOSCaptureView: View {
                     ? "Envío anterior sin resultado · verifica el resultado antes de repetirlo"
                     : "Captura pendiente · el reintento conserva su identificador"
             } else if let response = items.last(where: {
-                $0.payload.route == action.route && $0.status == .sent
+                $0.payload.route == action.route && !$0.isRetrySuppressed && $0.status == .sent
                     && $0.lastResponse?.status != "needs_confirmation"
             })?.lastResponse {
                 statusMessage = response.displayMessage ?? response.question
+            } else if action == .reminder, !retainedReminders.isEmpty {
+                statusMessage = "Anterior conservado en Historial · escribe un recordatorio distinto"
             }
         } catch {
             statusMessage = "No se pudo recuperar la captura pendiente"

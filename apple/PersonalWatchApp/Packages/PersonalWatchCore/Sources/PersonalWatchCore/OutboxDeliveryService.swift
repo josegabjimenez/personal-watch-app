@@ -16,11 +16,11 @@ public enum OutboxDeliveryFailure: Error, Equatable, LocalizedError, Sendable {
         case .reminderConfigurationPending:
             return "Recordatorio pendiente · revisa la configuración o el límite de IA"
         case .http(401):
-            return "HMAC rechazado · configura nuevamente desde el iPhone"
+            return "Autorización rechazada · revisa la configuración desde el iPhone"
         case .http(let statusCode):
             return "El BFF respondió HTTP \(statusCode)"
-        case .network:
-            return "Sin conexión · guardado para reintento"
+        case .network(let code):
+            return CaptureTransportDescription.message(code: code)
         case .invalidResponse:
             return "Respuesta inválida · guardado para reintento"
         case .unsafeResponse:

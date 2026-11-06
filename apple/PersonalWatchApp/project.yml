@@ -30,8 +30,8 @@ targets:
       PRODUCT_MODULE_NAME: HermesCaptureiOS
       PRODUCT_BUNDLE_IDENTIFIER: dev.josegabjimenez.HermesCapture
       CODE_SIGN_STYLE: Automatic
-      MARKETING_VERSION: 0.3.5
-      CURRENT_PROJECT_VERSION: 8
+      MARKETING_VERSION: 0.3.6
+      CURRENT_PROJECT_VERSION: 9
       GENERATE_INFOPLIST_FILE: YES
       INFOPLIST_KEY_CFBundleDisplayName: Personal Watch App
       INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
@@ -55,8 +55,8 @@ targets:
       PRODUCT_MODULE_NAME: HermesCaptureWatch
       PRODUCT_BUNDLE_IDENTIFIER: dev.josegabjimenez.HermesCapture.watchkitapp
       CODE_SIGN_STYLE: Automatic
-      MARKETING_VERSION: 0.3.5
-      CURRENT_PROJECT_VERSION: 8
+      MARKETING_VERSION: 0.3.6
+      CURRENT_PROJECT_VERSION: 9
       GENERATE_INFOPLIST_FILE: YES
       INFOPLIST_KEY_CFBundleDisplayName: Personal Watch App
       INFOPLIST_KEY_WKApplication: YES

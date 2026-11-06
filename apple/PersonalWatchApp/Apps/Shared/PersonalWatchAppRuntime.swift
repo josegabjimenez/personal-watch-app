@@ -58,6 +58,47 @@ enum PersonalWatchAppRuntime {
         return WebhookClient(endpoint: EndpointValidator.captureURL(from: baseURL))
     }
 
+    /// Connection diagnostics never enqueue or sign a capture.
+    static func checkServerConnection(baseURL: URL) async -> ServerConnectionCheckResult {
+        #if DEBUG && targetEnvironment(simulator)
+        if syntheticCaseID != nil {
+            let configuration = URLSessionConfiguration.ephemeral
+            configuration.protocolClasses = [PersonalWatchSyntheticUIURLProtocol.self]
+            configuration.urlCache = nil
+            configuration.urlCredentialStorage = nil
+            configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+            let session = URLSession(configuration: configuration)
+            defer { session.invalidateAndCancel() }
+            return await ServerConnectionCheck.check(baseURL: baseURL, session: session)
+        }
+        #endif
+        return await ServerConnectionCheck.check(baseURL: baseURL)
+    }
+
+    static func prepareSyntheticStateIfNeeded() async {
+        #if DEBUG && targetEnvironment(simulator)
+        guard let caseID = syntheticCaseID,
+              ProcessInfo.processInfo.arguments.contains("--personal-watch-ui-scenario=reminder_old_sending")
+              || ProcessInfo.processInfo.arguments.contains("--hermes-ui-scenario=reminder_old_sending")
+        else { return }
+        let url = outboxURL
+        guard !FileManager.default.fileExists(atPath: url.path) else { return }
+        let capturedAt = "2026-11-01T00:00:00Z"
+        let payload = CaptureFactory(
+            appVersion: "synthetic-ui", platform: "simulator", osVersion: "synthetic",
+            deviceID: "synthetic-ui-device", surface: "synthetic-ui",
+            nowISO8601: { capturedAt }, makeRequestID: { "synthetic-old-reminder-" + caseID }
+        ).makePayload(kind: .reminder, text: "Recordatorio anterior sintético", requestWrite: true)
+        let store = FileOutboxStore(fileURL: url)
+        do {
+            _ = try await store.enqueue(payload, now: capturedAt)
+            _ = try await store.claimDelivery(payload: payload, now: capturedAt)
+        } catch {
+            // Fixtures remain fail-closed and never alter configuration or credentials.
+        }
+        #endif
+    }
+
     #if DEBUG && targetEnvironment(simulator)
     private static var syntheticCaseID: String? {
         let arguments = ProcessInfo.processInfo.arguments
@@ -86,8 +127,28 @@ private final class PersonalWatchSyntheticUIURLProtocol: URLProtocol {
         guard let url = request.url,
               url.scheme == "https", url.host == "personal-watch-ui.invalid",
               url.port == nil, url.user == nil, url.password == nil,
-              url.query == nil, url.fragment == nil,
-              url.path == "/webhooks/mobile-capture-v1", request.httpMethod == "POST" else {
+              url.query == nil, url.fragment == nil else {
+            fail(URLError(.unsupportedURL))
+            return
+        }
+        if url.path == "/health", request.httpMethod == "GET" {
+            guard request.httpBody == nil,
+                  request.value(forHTTPHeaderField: WebhookHeaders.signatureV2) == nil,
+                  request.value(forHTTPHeaderField: WebhookHeaders.requestID) == nil else {
+                fail(URLError(.unsupportedURL))
+                return
+            }
+            if scenario == "reminder_network_failure" {
+                fail(URLError(.cannotFindHost))
+            } else {
+                do {
+                    try respond(["status": "ok", "service": "mobile-capture-v1-staging",
+                                 "mode": "allowlisted-write", "write_domains": ["aura.reminder_capture", "aura.grocery_capture"]], status: 200)
+                } catch { fail(error) }
+            }
+            return
+        }
+        guard url.path == "/webhooks/mobile-capture-v1", request.httpMethod == "POST" else {
             fail(URLError(.unsupportedURL))
             return
         }
@@ -121,13 +182,31 @@ private final class PersonalWatchSyntheticUIURLProtocol: URLProtocol {
                 body["external_ids"] = ["notion_block_id": "synthetic-grocery-block"]
                 body["plan"] = ["would_write": true, "side_effects": ["notion.official_grocery_list.write"]]
             case .reminder:
-                body["display_message"] = "Recordatorio guardado · lunes 26 oct, 2:00 p. m. Bogotá · avisos pendientes"
+                if scenario == "reminder_network_failure" {
+                    fail(URLError(.cannotFindHost))
+                    return
+                }
+                if scenario == "reminder_pending" {
+                    try respond(["status": "error", "error": "reminder_pending_retry",
+                                 "request_id": payload.requestID, "domain": payload.route.domain.rawValue], status: 502)
+                    return
+                }
+                if scenario == "reminder_expired" {
+                    body["status"] = "needs_input"
+                    body["write_committed"] = false
+                    body["display_message"] = "La hora ya pasó · no creé este recordatorio"
+                    body["plan"] = ["would_write": false, "side_effects": []]
+                    try respond(body, status: 200)
+                    return
+                }
+                body["display_message"] = "Guardado en Todoist · lunes 26 oct, 2:00 p. m. Bogotá · avisos pendientes"
                 body["interpreted_due"] = ["start": "2026-10-26T14:00:00-05:00",
                                             "timezone": "America/Bogota", "display": "lunes 26 oct, 2:00 p. m. Bogotá"]
-                body["calendar_synced"] = false
-                body["calendar_sync_pending"] = true
-                body["external_ids"] = ["notion_page_id": "synthetic-reminder-page"]
-                body["plan"] = ["would_write": true, "side_effects": ["notion.task.write"]]
+                body["auto_reminder_requested"] = true
+                body["notification_verified"] = false
+                body["delivery_status"] = "pending_verification"
+                body["external_ids"] = ["todoist_task_id": "synthetic-reminder-task"]
+                body["plan"] = ["would_write": true, "side_effects": ["todoist.task.write"]]
             case .expense:
                 if payload.context.userCancellation == true {
                     body["status"] = "cancelled"
