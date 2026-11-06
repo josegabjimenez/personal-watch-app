@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 import sqlite3
 import tempfile
+import threading
 from types import SimpleNamespace
 import unittest
 from dataclasses import replace
@@ -154,11 +155,51 @@ class GroceryCaptureTests(unittest.TestCase):
         self.assertEqual(response["external_ids"]["created"], 2)
 
     def test_concurrent_batches_dispatch_each_item_once(self):
-        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
-            results = list(pool.map(lambda _: self.execute(), range(2)))
+        original_payload = copy.deepcopy(self.payload)
+        started, release = threading.Event(), threading.Event()
+        def pause_first_mutation():
+            if not started.is_set():
+                started.set()
+                if not release.wait(5):
+                    raise AssertionError("synthetic concurrent mutation was not released")
+        def worker():
+            try:
+                return self.execute(original_payload)
+            except batch.GroceryPending as pending:
+                return pending
+        self.fake.before_mutation = pause_first_mutation
+        original_execute = adapter.GroceryAdapter.execute
+        with mock.patch.object(adapter.GroceryAdapter, "execute", autospec=True, side_effect=original_execute) as dispatch:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+                first = pool.submit(worker)
+                try:
+                    self.assertTrue(started.wait(5))
+                    second = pool.submit(worker)
+                    pending = second.result(timeout=5)
+                    self.assertIsInstance(pending, batch.GroceryPending)
+                    self.assertEqual(pending.response["status"], "needs_reconciliation")
+                    self.assertEqual(pending.response["request_id"], original_payload["request_id"])
+                    self.assertNotIn("write_committed", pending.response)
+                finally:
+                    release.set()
+                results = [first.result(timeout=5), second.result(timeout=5)]
+            completed_calls = len(self.fake.calls)
+            # A concurrent observer may see the first child's durable dispatch
+            # claim before its receipt. Retry only after both workers finish,
+            # preserving the exact original request and frozen child identities.
+            results = [self.execute(original_payload) if isinstance(value, batch.GroceryPending) else value
+                       for value in results]
+        self.assertEqual(original_payload, self.payload)
+        self.assertEqual(dispatch.call_count, 2)
+        self.assertEqual(len(self.fake.calls), completed_calls)
+        child_ids = [call.args[1] for call in dispatch.call_args_list]
+        self.assertEqual(len(set(child_ids)), 2)
         self.assertEqual(len(self.fake.writes), 2)
         self.assertTrue(all(value["status"] in {"committed", "duplicate"} for value in results))
         self.assertEqual(results[0]["external_ids"], results[1]["external_ids"])
+        self.assertEqual(results[0]["external_ids"]["created"], 2)
+        self.assertEqual(len(set(results[0]["external_ids"]["notion_block_ids"])), 2)
+        self.assertEqual({item["operation_id"] for item in results[0]["external_ids"]["grocery_items"]}, set(child_ids))
 
     def test_preflight_error_cannot_mask_another_workers_committed_progress(self):
         original_prepare = adapter.GroceryAdapter.prepare

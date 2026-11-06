@@ -5,8 +5,8 @@ temporary ID before calling ``create_or_reconcile``. A retry always reuses
 those values. No natural-language parsing or destination selection happens
 here, and an acknowledgement is never treated as proof of a matching task.
 
-API contract: https://developer.todoist.com/api/v1/ (Sync command UUIDs,
-item_add, fixed-zone due dates, User Info and cursor pagination).
+API contract: https://developer.todoist.com/api/v1/ (REST task creation,
+historical Sync command UUIDs, fixed-zone readback and cursor pagination).
 """
 from __future__ import annotations
 
@@ -144,11 +144,21 @@ class TodoistGateway:
             raise PermanentTodoistError("todoist_authorization_required")
         return token
 
-    def _request(self, method: str, path: str, deadline: float, *, form: dict[str, str] | None = None) -> dict[str, Any]:
+    def _request(self, method: str, path: str, deadline: float, *, form: dict[str, str] | None = None,
+                 json_body: dict[str, Any] | None = None, request_id: str | None = None,
+                 on_before_send: Callable[[], None] | None = None,
+                 retry_unauthorized: bool = True) -> dict[str, Any]:
+        if form is not None and json_body is not None:
+            raise PermanentTodoistError("todoist_invalid_request_body")
+        if request_id is not None:
+            _uuid(request_id)
+        if on_before_send is not None and not callable(on_before_send):
+            raise PermanentTodoistError("todoist_dispatch_guard_required")
+        data = (json.dumps(json_body, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+                if json_body is not None else parse.urlencode(form).encode("utf-8") if form is not None else None)
         remaining = deadline - time.monotonic()
         if remaining <= 0 or not _TRANSPORT_SLOTS.acquire(blocking=False):
             raise RetryableTodoistError("todoist_timeout_or_busy")
-        data = parse.urlencode(form).encode("utf-8") if form is not None else None
         result: queue.Queue[Any] = queue.Queue(maxsize=1)
 
         def transport() -> None:
@@ -165,15 +175,28 @@ class TodoistGateway:
                         raise RetryableTodoistError("todoist_timeout_or_busy")
                     headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
                     if data is not None:
-                        headers["Content-Type"] = "application/x-www-form-urlencoded"
+                        headers["Content-Type"] = "application/json" if json_body is not None else "application/x-www-form-urlencoded"
+                    if request_id is not None:
+                        # Additional defense only. REST safety comes from the
+                        # caller's durable one-dispatch claim, not header retention.
+                        headers["X-Request-Id"] = request_id
                     req = request.Request(API_ROOT + path, data=data, headers=headers, method=method)
                     try:
+                        if on_before_send is not None:
+                            on_before_send()
+                            # A slow durable claim may outlive this request. The
+                            # claim remains consumed even if no HTTP write follows.
+                            transport_remaining = deadline - time.monotonic()
+                            if transport_remaining <= 0:
+                                raise RetryableTodoistError("todoist_timeout_or_busy")
                         with opener.open(req, timeout=transport_remaining) as response:
                             raw = response.read(MAX_RESPONSE_BYTES + 1)
                     except error.HTTPError as exc:
                         if exc.code != 401:
                             raise
                         exc.close()
+                        if not retry_unauthorized:
+                            raise PermanentTodoistError("todoist_authorization_required") from None
                         if attempt or not callable(self._token):
                             raise PermanentTodoistError("todoist_authorization_required") from None
                         if deadline <= time.monotonic():
@@ -429,6 +452,66 @@ class TodoistGateway:
         receipt["duplicate"] = False
         if task_id is None and on_external_id:
             on_external_id(receipt["task_id"])
+        return receipt
+
+    def create_rest_or_reconcile(self, plan: dict[str, Any], command_uuid: str,
+                                 identity: dict[str, str], external_id: str | None = None, *,
+                                 on_before_post: Callable[[], None],
+                                 on_external_id: Callable[[str], None] | None = None) -> dict[str, Any]:
+        """One REST creation guarded by the caller's durable dispatch claim.
+
+        Historical Sync rows never enter this method automatically. The caller
+        must switch permanently to read-only reconciliation once its claim is
+        consumed, including crashes before POST, HTTP errors and lost replies.
+        """
+        title, due_instant = _validate_plan(plan)
+        _uuid(command_uuid)
+        if not callable(on_before_post):
+            raise PermanentTodoistError("todoist_dispatch_guard_required")
+        deadline = time.monotonic() + self.timeout
+        expected = self._verify_identity(identity, deadline)
+        previous = self._reconcile(plan, command_uuid, expected, deadline, external_id=external_id)
+        if previous is not None:
+            if on_external_id:
+                on_external_id(previous["task_id"])
+            return previous
+        labels = _plan_labels(plan)
+        if labels and not set(labels) <= set(self._label_catalog(deadline)):
+            raise PermanentTodoistError("todoist_selected_label_unavailable")
+        if due_instant <= dispatch_now():
+            raise PermanentTodoistError("todoist_due_elapsed_before_dispatch")
+        claimed = False
+
+        def claim_once() -> None:
+            nonlocal claimed
+            if claimed:
+                raise PermanentTodoistError("todoist_rest_dispatch_already_claimed")
+            if due_instant <= dispatch_now():
+                raise PermanentTodoistError("todoist_due_elapsed_before_dispatch")
+            on_before_post()
+            claimed = True
+            if due_instant <= dispatch_now():
+                raise PermanentTodoistError("todoist_due_elapsed_before_dispatch")
+
+        body = {"content": title, "description": marker(command_uuid),
+                "project_id": expected["inbox_project_id"], "labels": labels, "priority": 1,
+                "due_datetime": due_instant.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
+                "auto_reminder": True, "auto_parse_labels": False}
+        try:
+            created = self._request("POST", "/tasks", deadline, json_body=body, request_id=command_uuid,
+                                    on_before_send=claim_once, retry_unauthorized=False)
+        except _NotFound:
+            raise PermanentTodoistError("todoist_rest_unavailable") from None
+        task_id = created.get("id")
+        if not _resource_id(task_id):
+            raise RetryableTodoistError("todoist_invalid_task_mapping")
+        if on_external_id:
+            on_external_id(task_id)
+        # A create response is insufficient: an exact GET must verify all fields.
+        receipt = self._reconcile(plan, command_uuid, expected, deadline, external_id=task_id)
+        if receipt is None:
+            raise RetryableTodoistError("todoist_saved_task_not_verified")
+        receipt["duplicate"] = False
         return receipt
 
 

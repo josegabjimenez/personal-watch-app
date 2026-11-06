@@ -36,6 +36,41 @@ struct WatchHistoryView: View {
                             .font(.footnote)
                             .lineLimit(2)
 
+                        if item.isRetrySuppressed {
+                            Label("Conservado · sin reintentos", systemImage: "tray.full")
+                                .font(.footnote)
+                            Text("El resultado anterior se conserva; no se canceló en Todoist.")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+
+                        if item.payload.route == .reminder {
+                            NavigationLink {
+                                ScrollView {
+                                    VStack(alignment: .leading, spacing: 8) {
+                                        Text(item.payload.capture.text)
+                                        Text("Capturado: \(captureDate(item.payload.createdAt))")
+                                        Text("ID: \(item.id)")
+                                            .font(.caption2.monospaced())
+                                        Text("Estado del envío: \(statusTitle(item.status))")
+                                        if item.isRetrySuppressed {
+                                            Text("Conservado localmente · sin reintentos")
+                                        }
+                                        if let lastError = item.lastError {
+                                            Text("Último error: \(lastError)")
+                                                .font(.caption2.monospaced())
+                                        }
+                                    }
+                                    .padding()
+                                }
+                                .navigationTitle("Datos de captura")
+                            } label: {
+                                Label("Datos de captura", systemImage: "info.circle")
+                            }
+                            .font(.footnote)
+                            .accessibilityIdentifier("history.reminderDetails.\(item.id)")
+                        }
+
                         if let message = item.lastResponse?.displayMessage ?? item.lastResponse?.question {
                             Text(message)
                                 .font(.footnote)
@@ -85,6 +120,12 @@ struct WatchHistoryView: View {
         } catch {
             errorMessage = "No se pudo leer el historial"
         }
+    }
+
+    private func captureDate(_ value: String) -> String {
+        let formatter = ISO8601DateFormatter()
+        guard let date = formatter.date(from: value) else { return value }
+        return date.formatted(date: .abbreviated, time: .shortened)
     }
 
     private func routeTitle(_ item: OutboxItem) -> String {

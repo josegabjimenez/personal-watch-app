@@ -21,6 +21,10 @@ struct WatchCaptureView: View {
     @State private var queuedIsSending = false
     @State private var durableCancellationMessage: String?
     @State private var pendingExpenseConfirmation: PendingExpenseConfirmation?
+    @State private var showsReminderRetention = false
+    @State private var isCheckingConnection = false
+    @State private var connectionMessage: String?
+    @State private var connectionDiagnostic: String?
 
     private let accent = Color(red: 187 / 255, green: 0, blue: 14 / 255)
 
@@ -101,6 +105,46 @@ struct WatchCaptureView: View {
                     }
                 }
 
+                if action == .reminder {
+                    if queuedPayload != nil {
+                        Button("Nuevo recordatorio") {
+                            showsReminderRetention = true
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(isSaving)
+                        .accessibilityIdentifier("capture.newReminder")
+                        Text("Conserva el anterior en Historial antes de escribir una intención distinta.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Button {
+                        Task { @MainActor in await checkConnection() }
+                    } label: {
+                        if isCheckingConnection {
+                            ProgressView()
+                        } else {
+                            Label("Comprobar conexión", systemImage: "network")
+                        }
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(isSaving || isCheckingConnection)
+                    .accessibilityIdentifier("capture.checkConnection")
+                    Text("Solo comprueba conexión; no envía ni reintenta capturas.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    if let connectionMessage {
+                        Text(connectionMessage)
+                            .font(.footnote)
+                            .accessibilityIdentifier("capture.connectionStatus")
+                    }
+                    if let connectionDiagnostic {
+                        Text(connectionDiagnostic)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
                 if let statusMessage {
                     Text(statusMessage)
                         .font(.footnote)
@@ -111,10 +155,20 @@ struct WatchCaptureView: View {
             .padding(.horizontal, 4)
         }
         .navigationTitle(action.title)
+        .confirmationDialog("Conservar el recordatorio anterior", isPresented: $showsReminderRetention, titleVisibility: .visible) {
+            Button("Conservar y abrir nuevo") {
+                Task { @MainActor in await retainReminderAndOpenDraft() }
+            }
+            .accessibilityIdentifier("capture.retainReminder.confirm")
+            Button("Volver", role: .cancel) {}
+        } message: {
+            Text("Conserva su texto, fecha e identificador y detiene los reintentos de este dispositivo. No cancela un posible registro en Todoist. El nuevo borrador es para una intención distinta.")
+        }
         .onAppear {
             ensureDeviceIdentity()
         }
         .task {
+            await PersonalWatchAppRuntime.prepareSyntheticStateIfNeeded()
             if action == .expense { await restorePendingExpenseConfirmation() }
             if pendingExpenseConfirmation == nil { await restoreQueuedCapture() }
         }
@@ -135,6 +189,60 @@ struct WatchCaptureView: View {
         queuedPayload = nil
         text = ""
         statusMessage = "El artículo anterior permanece en Historial · escribe un artículo distinto"
+    }
+
+    @MainActor
+    private func retainReminderAndOpenDraft() async {
+        guard action == .reminder, !isSaving, let original = queuedPayload else { return }
+        isSaving = true
+        defer { isSaving = false }
+        let store = FileOutboxStore(fileURL: outboxURL)
+        do {
+            _ = try await store.retainReminderForReview(
+                requestID: original.requestID, now: ISO8601DateFormatter().string(from: Date())
+            )
+            openDistinctReminderDraft()
+        } catch {
+            // A late, safely correlated receipt can win the retention race.
+            // Storage failure or an uncertain result never clears this editor.
+            if let item = try? await store.loadAll().first(where: { $0.id == original.requestID }),
+               item.payload == original, item.status == .sent,
+               let response = item.lastResponse,
+               OutboxDeliveryService.isSafe(response: response, for: original) {
+                openDistinctReminderDraft()
+            } else {
+                statusMessage = "No pude conservar el recordatorio · el texto y su estado siguen aquí"
+            }
+        }
+    }
+
+    @MainActor
+    private func openDistinctReminderDraft() {
+        queuedPayload = nil
+        queuedIsSending = false
+        text = ""
+        statusMessage = "Anterior conservado en Historial · escribe un recordatorio distinto"
+    }
+
+    @MainActor
+    private func checkConnection() async {
+        guard action == .reminder, !isSaving, !isCheckingConnection else { return }
+        isCheckingConnection = true
+        connectionMessage = nil
+        connectionDiagnostic = nil
+        defer { isCheckingConnection = false }
+        do {
+            guard let credentials = try PersonalWatchAppRuntime.credentials() else {
+                connectionMessage = "Configuración pendiente · comprueba la app del iPhone"
+                return
+            }
+            let result = await PersonalWatchAppRuntime.checkServerConnection(baseURL: credentials.baseURL)
+            connectionMessage = result.message
+            connectionDiagnostic = result.diagnosticCode
+        } catch {
+            connectionMessage = "Configuración no disponible · comprueba la app del iPhone"
+            connectionDiagnostic = "configuration_unavailable"
+        }
     }
 
     private var prompt: String {
@@ -379,15 +487,18 @@ struct WatchCaptureView: View {
         do {
             let items = try await FileOutboxStore(fileURL: outboxURL).loadAll()
             guard let item = items.last(where: {
-                $0.payload.route == action.route && [.pending, .failed, .sending].contains($0.status)
+                $0.payload.route == action.route && !$0.isRetrySuppressed
+                    && [.pending, .failed, .sending].contains($0.status)
                     && !$0.payload.context.userConfirmation && $0.payload.context.userCancellation != true
             }) else {
                 if pendingExpenseConfirmation == nil,
                    let response = items.last(where: {
-                       $0.payload.route == action.route && $0.status == .sent
+                       $0.payload.route == action.route && !$0.isRetrySuppressed && $0.status == .sent
                            && $0.lastResponse?.status != "needs_confirmation"
                    })?.lastResponse {
                     statusMessage = response.displayMessage ?? response.question
+                } else if action == .reminder, items.contains(where: { $0.payload.route == .reminder && $0.isRetrySuppressed }) {
+                    statusMessage = "Anterior conservado en Historial · escribe un recordatorio distinto"
                 }
                 return
             }

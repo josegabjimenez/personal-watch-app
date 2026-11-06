@@ -1,5 +1,9 @@
 # Reminder package over accepted Mercado
 
+The plan and gates below record the implementation checkpoint. Jose's subsequent
+November 5 authorization, authenticated server preparation and observed runtime
+state are tracked in the [server preparation receipt](../../../docs/verification/2026-11-05/REMINDER_SERVER_PREPARATION.md).
+
 This package adds timed personal reminders to the recorded six-file historical Mercado release. It does **not** deploy the combined MVP server or use the obsolete four-file updater. The five grocery modules remain byte-identical. The historical server retains its Config, CLI arguments, HMAC functions, planners, grocery route gates and original HTTP method bodies; the builder adds only `import reminder_runtime`, private names for the original HTTP methods, and two thin wrappers. Non-reminder requests retain the original body and method path. Reminder execution has its own exact authority checks, short SQLite claims and per-request lock.
 
 Recorded baseline: source `f8738b9a1529c09a7a577550706d7fb876ea6f89`, manifest SHA256 `bad63273cc49f2f7ca7342adcd3bd7f6d6e00a9658a7682d40d53c96a6d3a281`, historical server SHA256 `309602498c2a9ccf3186e7c336ed9ff5cc2fe3b693866fc1fbfdb18c1b0d5100`. The owner last independently checked it on November 4; Jose accepted current Mercado use on November 5. This reminder work has not refreshed production state. A different installed baseline requires reconciliation rather than bypassing a hash check.
@@ -31,6 +35,12 @@ All verification uses synthetic providers and temporary files; loopback tests ne
 1. Reuse the approved existing app OpenAI key through a **path-only** setting. Its value is never copied into this package, chat or a command. Do not change or remove the grocery credential setting.
 2. Complete the dedicated Todoist OAuth setup after Jose consents to its private destination and browser authorization. The setup tool registers a public PKCE client and asks only `task:add` plus `data:read`; the latter is account-wide read permission, although this backend reads only identity, labels, Inbox reconciliation and exact tasks. It does not export the Codex plugin's authorization. The one-time callback binds loopback only; Todoist documents localhost for testing, and actual callback eligibility remains a setup check. No public HTTPS endpoint is added.
 3. Store the resulting private bundle only at the explicitly confirmed destination. Its refresh token rotates; writes are atomic with a durable pre-refresh reservation. An uncertain refresh requires reauthorization, not replaying an old token. A separate explicit secure transfer/installation is needed for the service destination. Keep local/server copies from being used concurrently: rotating refresh credentials cannot safely have independent writers.
+
+   The setup authorization URL follows Todoist's live OAuth discovery metadata.
+   See the [November 5 setup follow-up](../../../docs/verification/2026-11-05/TODOIST_OAUTH_SETUP.md)
+   for the older route's observed consent error and the independently checked
+   endpoint correction. A browser click alone does not establish that the bundle
+   was saved successfully; verify the CLI's local status and file permissions.
 4. Set the exact existing Inbox metadata pin, verified against the chosen app-server account. The first account must match it. Reuse existing contextual labels; never create labels or reorganize projects. An appointment, project note or generic capture is outside this package.
 5. The separate reminder monthly allowance defaults to **zero**. A nonzero limit remains a required spending/rollout decision; the grocery USD2 counter neither funds nor limits reminders. Each attempted call reserves USD0.32 against a worst-context pricing envelope, then verified completed usage releases excess using conservative upper rates. Missing/refused/uncertain usage retains the reservation. At most two model attempts per original request are permitted. The reserve is not a prediction of invoice cost; actual model accuracy, latency and usage have not been measured here.
 
@@ -56,3 +66,11 @@ Prefer disabling **new reminder writes** through the reviewed configuration whil
 Never restore a pre-budget grocery backup over live spending state. Never restore the reminder DB and its witness to an earlier mutually consistent snapshot; local code cannot detect that joint rollback. Database-only loss/restore fails closed. Restoring a main operation ledger while reminder budget history survives marks the capture as requiring reconciliation, and stable HMAC-derived command IDs provide additional protection. Existing previously persisted command IDs are preserved. Do not auto-initialize, clear unknown reservations, refund unknown calls or rotate the signing identity to make a replay work.
 
 The app can say a task is saved only after exact readback. Uncertain outcomes stay failed/retryable in the original outbox with concise local copy; saved task, alert configuration and observed device receipt remain separate results.
+
+### Narrow REST follow-up (November 5, 2026)
+
+The live diagnostic received `AUTH_INSUFFICIENT_TOKEN_SCOPE` for its own Sync `item_add` command under the dedicated `task:add` + `data:read` grant. The current candidate uses REST task creation for new captures, preserving legacy operations as Sync. Its twelve-file seal is `55d14d53043179256791d14242c4f44b17bb33534dd7e18102c61c6bbc17b038`; exactly `reminder_capture.py` and `todoist_reminders.py` differ from the installed OAuth-corrected seal. The grocery baseline and other ten artifacts remain exact.
+
+REST dispatch is claimed durably once before POST; unresolved writes use the legacy-recognized `reconciliation_required` status and subsequent retries are read-only. A stable request header is not treated as an indefinite provider deduplication guarantee. Existing uncertain Sync operations never change transports automatically. Only a reviewed operator bound to a specific definitive rejection may migrate that rejected command without changing its capture, plan, date, identities or usage. Code rollback must close reminder writes before starting the legacy runtime. Preserve live databases, witnesses and rotating OAuth state throughout. Historical installation/activation operators retain their original pins; this two-module upgrade requires a separately frozen profile and verification receipt.
+
+[Current REST upgrade and live-test receipt](../../../docs/verification/2026-11-05/REMINDER_REST_LIVE_TEST.md): task readback, exact-body cached replay and at-due alert configuration passed; phone/Watch delivery remains unverified.

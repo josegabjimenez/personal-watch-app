@@ -501,7 +501,10 @@ with mock.patch.object(auth,'_post',side_effect=refresh):
         self.assertEqual(payload["scope"], "data:read task:add")
         self.assertEqual(payload["grant_types"], ["authorization_code", "refresh_token"])
         auth_url = parse.urlsplit(browser.call_args.args[0])
-        self.assertEqual(auth_url.scheme + "://" + auth_url.netloc + auth_url.path, auth.AUTHORIZE_URL)
+        self.assertEqual(
+            auth_url.scheme + "://" + auth_url.netloc + auth_url.path,
+            "https://api.todoist.com/oauth/authorize",
+        )
         query = parse.parse_qs(auth_url.query)
         self.assertEqual(query["scope"], ["data:read,task:add"])
         self.assertEqual(query["code_challenge_method"], ["S256"])
