@@ -352,9 +352,8 @@ struct WatchCaptureView: View {
                 queuedPayload = nil
                 queuedIsSending = false
                 text = ""
-                durableCancellationMessage = enqueued.cancellationMayHaveBeenSent == true
-                    ? "Cancelación solicitada · el envío anterior puede haberse registrado; verifica en Firefly"
-                    : "Cancelado en este dispositivo · aviso al servidor pendiente"
+                durableCancellationMessage = OutboxPresentation.message(for: enqueued)
+                    ?? "Cancelado en este dispositivo · aviso al servidor pendiente"
             }
             statusMessage = durableCancellationMessage ?? "Enviando…"
 
@@ -387,9 +386,7 @@ struct WatchCaptureView: View {
                 }
                 pendingExpenseConfirmation = nil
                 text = ""
-                statusMessage = enqueued.cancellationMayHaveBeenSent == true
-                    ? "Cancelación recibida · verifica si hubo un registro previo en Firefly"
-                    : (response.displayMessage ?? "Gasto cancelado")
+                statusMessage = OutboxPresentation.message(for: enqueued, response: response) ?? "Gasto cancelado"
                 WKInterfaceDevice.current().play(.success)
                 return
             }
@@ -491,11 +488,17 @@ struct WatchCaptureView: View {
                     && !$0.payload.context.userConfirmation && $0.payload.context.userCancellation != true
             }) else {
                 if pendingExpenseConfirmation == nil,
-                   let response = items.last(where: {
+                   let cancellation = items.last(where: {
+                       $0.payload.route == action.route && $0.payload.context.userCancellation == true
+                           && $0.cancellationMayHaveBeenSent == true && [.pending, .failed, .sending].contains($0.status)
+                   }) {
+                    statusMessage = OutboxPresentation.message(for: cancellation)
+                } else if pendingExpenseConfirmation == nil,
+                   let latest = items.last(where: {
                        $0.payload.route == action.route && !$0.isRetrySuppressed && $0.status == .sent
                            && $0.lastResponse?.status != "needs_confirmation"
-                   })?.lastResponse {
-                    statusMessage = response.displayMessage ?? response.question
+                   }), let message = OutboxPresentation.message(for: latest) {
+                    statusMessage = message
                 } else if action == .reminder, items.contains(where: { $0.payload.route == .reminder && $0.isRetrySuppressed }) {
                     statusMessage = "Anterior conservado en Historial · escribe un recordatorio distinto"
                 }

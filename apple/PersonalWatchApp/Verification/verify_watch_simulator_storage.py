@@ -38,12 +38,14 @@ POST_COUNTS = {
     "testExpensePreviewNeedsExplicitConfirmationAndCommitsOnce": 2,
     "testExpenseCancellationPersistsAcrossRelaunch": 2,
     "testOfflineExpenseConfirmationCanBeCancelled": 3,
+    "testUncertainCancellationBulkRetryKeepsWarningAfterRelaunch": 4,
     "testExpiredExpensePreviewIsTerminal": 2,
 }
 SEEDED_GET_ONLY = DNS_RETAINED | {
     "testConnectionCheckDoesNotRetryFourFailureReminder",
     "testUnknownSendingReminderCanBeRetainedWithoutAnotherSend",
     "testRefreshedExpenseCurrentSendingStaysDisabledOnRelaunch",
+    "testSendingCancellationRestoresRequestedWarningWithoutRetry",
 }
 ALL_CASES = HEALTH | PURE_UI | POST_COUNTS.keys() | SEEDED_GET_ONLY
 
@@ -60,18 +62,20 @@ def wire_hash(payload):
     return hashlib.sha256(body.encode()).hexdigest()
 
 
-def expected_seed_payload(case_id, kind="reminder", suffix="old-reminder", token=None):
+def expected_seed_payload(case_id, kind="reminder", suffix="old-reminder", token=None, cancellation=False):
     """Literal, complete capture contract for the fixed synthetic seeds."""
     expense = kind == "expense"
     text = "45 mil Uber Efectivo" if expense else "Recordatorio anterior sintético"
     context = {
-        "user_confirmation": token is not None, "user_cancellation": False,
+        "user_confirmation": token is not None, "user_cancellation": cancellation,
         "watch_reachable_to_phone": False, "shortcut_compatibility": False,
-        "requires_confirmation": expense and token is None,
-        "dry_run": False, "allow_write": True, "allow_firefly_write": expense,
+        "requires_confirmation": expense and token is None and not cancellation,
+        "dry_run": False, "allow_write": True, "allow_firefly_write": expense and not cancellation,
     }
+    if token is not None or cancellation:
+        context["operation_id"] = "exp_" + "8" * 32
     if token is not None:
-        context.update(confirmation_token=token, operation_id="exp_" + "8" * 32)
+        context["confirmation_token"] = token
     return {
         "event_type": "mobile_capture.v1", "schema": "com.jose.hermes.mobile_capture", "schema_version": 1,
         "request_id": "synthetic-" + suffix + "-" + case_id, "created_at": "2026-11-01T00:00:00Z",
@@ -176,10 +180,57 @@ def validate_case(method, case_id, root):
         require(len(rows) == 1 and rows[0]["attempts"] == 6 and rows[0]["status"] == "failed", "Grocery recovery changed identity")
         require(len({x["request_id"] for x in posts}) == 1 and len({x["body_sha256"] for x in posts}) == 1,
                 "Sixth retry used a new request/body")
+    if method == "testSendingCancellationRestoresRequestedWarningWithoutRetry":
+        require(len(rows) == 3, "Sending cancellation history changed without a dispatch")
+        token = "synthetic-ui-confirmation-token"
+        expected = [
+            ("expense-preview", None, False, "sent"),
+            ("expense-confirm-current", token, False, "sending"),
+            ("expense-cancel", None, True, "sending"),
+        ]
+        for suffix, confirmation_token, is_cancellation, state in expected:
+            row = indexed["synthetic-" + suffix + "-" + case_id]
+            require(row["payload"] == expected_seed_payload(case_id, "expense", suffix, confirmation_token, is_cancellation),
+                    "Crash-window payload/body/identity changed")
+            require(row["status"] == state and row["attempts"] == 1
+                    and row["created_at"] == "2026-11-01T00:00:00Z", "Crash-window state/date/attempt changed")
+            if state == "sending":
+                require("last_response" not in row and "last_error" not in row, "Invented result for sending request")
+        cancellation = indexed["synthetic-expense-cancel-" + case_id]
+        require(cancellation["cancellation_may_have_been_sent"] is True, "Crash-window uncertainty flag lost")
+        preview = indexed["synthetic-expense-preview-" + case_id]
+        require(preview.get("confirmation_invalidated_at")
+                and preview["last_response"]["confirmation_token"] == token
+                and preview["last_response"]["operation_id"] == "exp_" + "8" * 32,
+                "Cancelled preview incorrectly remained active or changed")
     if method == "testEligibleBulkRetryUsesOriginalAndThenBecomesNoOp":
         require(len(rows) == 1 and rows[0]["status"] == "sent" and rows[0]["attempts"] == 2, "Bulk replay changed identity")
         require(posts[0]["request_id"] == posts[1]["request_id"] and posts[0]["body_sha256"] == posts[1]["body_sha256"],
                 "Bulk retry changed original request/body")
+    if method in {"testOfflineExpenseConfirmationCanBeCancelled",
+                  "testUncertainCancellationBulkRetryKeepsWarningAfterRelaunch",
+                  "testExpenseCancellationPersistsAcrossRelaunch"}:
+        cancellations = [x for x in rows if x["payload"]["context"].get("user_cancellation") is True]
+        require(len(cancellations) == 1, "Cancellation identity was duplicated")
+        cancellation = cancellations[0]
+        uncertain = method != "testExpenseCancellationPersistsAcrossRelaunch"
+        require(cancellation["cancellation_may_have_been_sent"] is uncertain, "Durable uncertainty flag changed")
+        require(cancellation["status"] == "sent", "Cancellation receipt missing")
+        expected_attempts = 2 if method == "testUncertainCancellationBulkRetryKeepsWarningAfterRelaunch" else 1
+        require(cancellation["attempts"] == expected_attempts, "Unexpected cancellation dispatches")
+        receipt = cancellation["last_response"]
+        require(receipt["status"] == "cancelled" and receipt["request_id"] == cancellation["payload"]["request_id"]
+                and receipt["operation_id"] == cancellation["payload"]["context"]["operation_id"],
+                "Cancellation receipt lost correlation")
+        require(receipt["display_message"] == "Gasto cancelado · no se registró nada"
+                and receipt["write_committed"] is False
+                and receipt["plan"] == {"would_write": False, "side_effects": []},
+                "Presentation rewrote the original cancellation receipt")
+        require(len(rows) == (3 if uncertain else 2), "Unexpected expense capture created")
+        if uncertain:
+            confirmations = [x for x in rows if x["payload"]["context"].get("user_confirmation") is True]
+            require(len(confirmations) == 1 and confirmations[0]["attempts"] == 1
+                    and "last_response" not in confirmations[0], "Original unacknowledged confirmation changed")
     return {"outbox_rows": len(rows), "audit_present": True, "posts": len(posts), "health_gets": len(gets)}
 
 

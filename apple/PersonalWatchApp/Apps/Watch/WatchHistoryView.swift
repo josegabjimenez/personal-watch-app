@@ -71,7 +71,7 @@ struct WatchHistoryView: View {
                             .accessibilityIdentifier("history.reminderDetails.\(item.id)")
                         }
 
-                        if let message = item.lastResponse?.displayMessage ?? item.lastResponse?.question {
+                        if let message = OutboxPresentation.message(for: item) {
                             Text(message)
                                 .font(.footnote)
                         }

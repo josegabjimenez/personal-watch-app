@@ -170,6 +170,7 @@ struct IOSContentView: View {
                         localOutboxDiagnostics.deliverable == 0 ||
                         isRetryingLocalOutbox
                     )
+                    .accessibilityIdentifier("capture.retryPending")
 
                     Text("Incluye capturas iniciadas por Siri o Shortcuts en el iPhone. El contenido permanece local; aquí solo se muestran contadores.")
                         .font(.footnote)
@@ -179,6 +180,7 @@ struct IOSContentView: View {
                 if let statusMessage {
                     Section("Estado") {
                         Text(statusMessage)
+                            .accessibilityIdentifier("home.status")
                     }
                 }
             }
@@ -385,10 +387,12 @@ struct IOSContentView: View {
             for item in items {
                 do {
                     let response = try await delivery.deliver(payload: item.payload, secret: credentials.secret)
-                    if let message = response.displayMessage ?? response.question { results.append(message) }
+                    if let message = OutboxPresentation.message(for: item, response: response) { results.append(message) }
                     sent += 1
                 } catch {
                     failed += 1
+                    if item.cancellationMayHaveBeenSent == true,
+                       let message = OutboxPresentation.message(for: item) { results.append(message) }
                 }
             }
             await refreshLocalOutbox()

@@ -223,9 +223,11 @@ final class PersonalWatchAppUITests: XCTestCase {
         launch()
         requestExpensePreview()
         app.buttons["expense.cancel"].tap()
-        assertStatusContains("cancelado")
+        assertStatusContains("Gasto cancelado · no se registró nada")
+        XCTAssertFalse(app.staticTexts["capture.status"].label.contains("registro previo"))
         relaunchAndOpenExpense()
         assertNoRestoredConfirmation()
+        assertStatusContains("Gasto cancelado · no se registró nada")
     }
 
     func testOfflineConfirmationCanBeCancelledWithoutRestoringPreview() {
@@ -235,9 +237,74 @@ final class PersonalWatchAppUITests: XCTestCase {
         assertStatusContains("Sin internet disponible")
         XCTAssertTrue(app.buttons["expense.cancel"].waitForExistence(timeout: 5))
         app.buttons["expense.cancel"].tap()
-        assertStatusContains("cancelado")
+        assertStatusContains("Cancelación recibida · verifica si hubo un registro previo en Firefly")
+        XCTAssertFalse(app.staticTexts["capture.status"].label.contains("no se registró nada"))
         relaunchAndOpenExpense()
         assertNoRestoredConfirmation()
+        assertStatusContains("Cancelación recibida · verifica si hubo un registro previo en Firefly")
+    }
+
+    func testOfflineCancellationWarningSurvivesRelaunchAndExactBulkRetry() {
+        launch(scenario: "offline_cancellation")
+        requestExpensePreview()
+        app.buttons["expense.confirm"].tap()
+        assertStatusContains("Sin internet disponible")
+        app.buttons["expense.cancel"].tap()
+        assertStatusContains("Cancelación solicitada · el envío anterior puede haberse registrado; verifica en Firefly")
+        assertNoRestoredConfirmation()
+
+        relaunchAndOpenExpense()
+        assertNoRestoredConfirmation()
+        assertStatusContains("Cancelación solicitada · el envío anterior puede haberse registrado; verifica en Firefly")
+
+        app.terminate()
+        // Preserve this case's saved request; only the local transport recovers.
+        launch()
+        let retry = app.buttons["capture.retryPending"]
+        reveal(retry)
+        let enabled = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == true AND enabled == true"), object: retry)
+        XCTAssertEqual(XCTWaiter.wait(for: [enabled], timeout: 5), .completed)
+        retry.tap()
+        let result = app.staticTexts["home.status"]
+        reveal(result)
+        let received = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "exists == true AND label CONTAINS %@", "Cancelación recibida · verifica si hubo un registro previo en Firefly"),
+            object: result)
+        XCTAssertEqual(XCTWaiter.wait(for: [received], timeout: 5), .completed)
+        XCTAssertFalse(result.label.contains("no se registró nada"))
+
+        relaunchAndOpenExpense()
+        assertNoRestoredConfirmation()
+        assertStatusContains("Cancelación recibida · verifica si hubo un registro previo en Firefly")
+    }
+
+    func testSendingCancellationRestoresWarningWithoutClaimingAcknowledgmentOrRetrying() {
+        launch(scenario: "expense_cancellation_sending")
+        // A real local adapter call provides a positive audit control; opening
+        // the expense form and checking its retry state must add no POST.
+        openCapture("reminder")
+        let check = app.buttons["capture.checkConnection"]
+        reveal(check)
+        check.tap()
+        assertConnectionContains("Servidor accesible · Recordatorio habilitado")
+
+        app.terminate()
+        launch(scenario: "expense_cancellation_sending")
+        let retry = app.buttons["capture.retryPending"]
+        reveal(retry)
+        XCTAssertTrue(retry.exists)
+        XCTAssertFalse(retry.isEnabled)
+        // Relaunch to open the expense action from the top of the home form.
+        relaunchAndOpenExpense()
+        assertNoRestoredConfirmation()
+        assertStatusContains("Cancelación solicitada · el envío anterior puede haberse registrado; verifica en Firefly")
+        XCTAssertFalse(app.staticTexts["capture.status"].label.contains("Cancelación recibida"))
+        XCTAssertFalse(app.staticTexts["capture.status"].label.contains("no se registró nada"))
+
+        relaunchAndOpenExpense()
+        assertNoRestoredConfirmation()
+        assertStatusContains("Cancelación solicitada · el envío anterior puede haberse registrado; verifica en Firefly")
+        XCTAssertFalse(app.staticTexts["capture.status"].label.contains("Cancelación recibida"))
     }
 
     func testExpiredPreviewIsTerminalAndNotRestored() {

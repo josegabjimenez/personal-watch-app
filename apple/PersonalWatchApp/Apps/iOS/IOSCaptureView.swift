@@ -280,9 +280,8 @@ struct IOSCaptureView: View {
                 pending = nil
                 queuedPayload = nil
                 text = ""
-                cancellationMessage = item.cancellationMayHaveBeenSent == true
-                    ? "Cancelación solicitada · el envío anterior puede haberse registrado; verifica el gasto"
-                    : "Cancelado en este dispositivo · pendiente de confirmar con el servidor"
+                cancellationMessage = OutboxPresentation.message(for: item)
+                    ?? "Cancelado en este dispositivo · pendiente de confirmar con el servidor"
                 statusMessage = cancellationMessage
             } else if !canonical.context.userConfirmation {
                 queuedPayload = canonical
@@ -307,14 +306,14 @@ struct IOSCaptureView: View {
                     text = ""
                 }
             }
-            statusMessage = response.displayMessage ?? response.question ?? "Respuesta recibida · revisa el resultado"
+            statusMessage = OutboxPresentation.message(for: item, response: response) ?? "Respuesta recibida · revisa el resultado"
         } catch let failure as OutboxDeliveryFailure {
             await refreshDeliveryState(store: store, requestID: enqueuedRequestID)
             statusMessage = cancellationMessage ?? failure.localizedDescription
         } catch let failure as OutboxStoreError {
             await refreshDeliveryState(store: store, requestID: enqueuedRequestID)
             if failure == .deliveryInProgress { deliveryInFlight = true }
-            statusMessage = failure.localizedDescription
+            statusMessage = cancellationMessage ?? failure.localizedDescription
         } catch {
             await refreshDeliveryState(store: store, requestID: enqueuedRequestID)
             statusMessage = cancellationMessage ?? "No se pudo guardar la captura · inténtalo de nuevo"
@@ -355,7 +354,7 @@ struct IOSCaptureView: View {
             } else if let item = items.last(where: {
                 $0.payload.route == action.route && !$0.isRetrySuppressed
                     && [.pending, .failed, .sending].contains($0.status)
-                    && $0.payload.context.userCancellation != true
+                    && !$0.payload.context.userConfirmation && $0.payload.context.userCancellation != true
             }) {
                 queuedPayload = item.payload
                 text = item.payload.capture.text
@@ -363,11 +362,16 @@ struct IOSCaptureView: View {
                 statusMessage = deliveryInFlight
                     ? "Envío anterior sin resultado · verifica el resultado antes de repetirlo"
                     : "Captura pendiente · el reintento conserva su identificador"
-            } else if let response = items.last(where: {
+            } else if let cancellation = items.last(where: {
+                $0.payload.route == action.route && $0.payload.context.userCancellation == true
+                    && $0.cancellationMayHaveBeenSent == true && [.pending, .failed, .sending].contains($0.status)
+            }) {
+                statusMessage = OutboxPresentation.message(for: cancellation)
+            } else if let latest = items.last(where: {
                 $0.payload.route == action.route && !$0.isRetrySuppressed && $0.status == .sent
                     && $0.lastResponse?.status != "needs_confirmation"
-            })?.lastResponse {
-                statusMessage = response.displayMessage ?? response.question
+            }), let message = OutboxPresentation.message(for: latest) {
+                statusMessage = message
             } else if action == .reminder, !retainedReminders.isEmpty {
                 statusMessage = "Anterior conservado en Historial · escribe un recordatorio distinto"
             }

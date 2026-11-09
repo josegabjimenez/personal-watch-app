@@ -65,7 +65,7 @@ enum PersonalWatchAppRuntime {
     static func prepareSyntheticStateIfNeeded() async {
         #if DEBUG && targetEnvironment(simulator)
         guard let caseID = syntheticCaseID,
-              ["reminder_old_sending", "reminder_old_dns", "expense_refreshed_confirmation_sending"].contains(syntheticScenario)
+              ["reminder_old_sending", "reminder_old_dns", "expense_refreshed_confirmation_sending", "expense_cancellation_sending"].contains(syntheticScenario)
         else { return }
         let url = outboxURL
         guard !FileManager.default.fileExists(atPath: url.path) else { return }
@@ -74,6 +74,8 @@ enum PersonalWatchAppRuntime {
         do {
             if syntheticScenario == "expense_refreshed_confirmation_sending" {
                 try await seedRefreshedExpenseConfirmation(in: store, caseID: caseID, capturedAt: capturedAt)
+            } else if syntheticScenario == "expense_cancellation_sending" {
+                try await seedSendingExpenseCancellation(in: store, caseID: caseID, capturedAt: capturedAt)
             } else {
                 let payload = syntheticFactory(id: "synthetic-old-reminder-" + caseID, capturedAt: capturedAt)
                     .makePayload(kind: .reminder, text: "Recordatorio anterior sintético", requestWrite: true)
@@ -133,6 +135,34 @@ enum PersonalWatchAppRuntime {
                          confirmationToken: refreshedToken, operationID: operationID)
         _ = try await store.enqueue(current, now: capturedAt)
         _ = try await store.claimDelivery(payload: current, now: capturedAt)
+    }
+
+    private static func seedSendingExpenseCancellation(in store: FileOutboxStore, caseID: String, capturedAt: String) async throws {
+        let operationID = "exp_" + String(repeating: "8", count: 32)
+        let token = "synthetic-ui-confirmation-token"
+        let text = "45 mil Uber Efectivo"
+        let preview = syntheticFactory(id: "synthetic-expense-preview-" + caseID, capturedAt: capturedAt)
+            .makePayload(kind: .expense, text: text, requestWrite: true)
+        _ = try await store.enqueue(preview, now: capturedAt)
+        _ = try await store.claimDelivery(payload: preview, now: capturedAt)
+        try await store.markSent(requestID: preview.requestID, now: capturedAt,
+                                 response: CaptureResponseV1(status: "needs_confirmation", dryRun: false,
+                                    requestID: preview.requestID, domain: preview.route.domain.rawValue,
+                                    operationID: operationID, confirmationToken: token,
+                                    confirmation: .init(amountCOP: 45000, description: "Uber", sourceName: "Efectivo",
+                                                        categoryName: "Transporte", budgetName: "Movilidad"),
+                                    writeCommitted: false, plan: .init(sideEffects: [], wouldWrite: false)))
+        let confirmation = syntheticFactory(id: "synthetic-expense-confirm-current-" + caseID, capturedAt: capturedAt)
+            .makePayload(kind: .expense, text: text, requestWrite: true, userConfirmation: true,
+                         confirmationToken: token, operationID: operationID)
+        _ = try await store.enqueue(confirmation, now: capturedAt)
+        _ = try await store.claimDelivery(payload: confirmation, now: capturedAt)
+        let cancellation = syntheticFactory(id: "synthetic-expense-cancel-" + caseID, capturedAt: capturedAt)
+            .makePayload(kind: .expense, text: text, requestWrite: true, userCancellation: true, operationID: operationID)
+        // This legitimate transaction invalidates the preview and records the
+        // prior sending attempt; neither request has a received outcome.
+        _ = try await store.enqueue(cancellation, now: capturedAt)
+        _ = try await store.claimDelivery(payload: cancellation, now: capturedAt)
     }
 
     fileprivate static func syntheticDirectory(caseID: String) -> URL {
@@ -258,6 +288,7 @@ private final class PersonalWatchSyntheticSession: URLSessioning {
             body["plan"] = ["would_write": true, "side_effects": ["todoist.task.write"]]
         case .expense:
             if payload.context.userCancellation == true {
+                if scenario == "offline_cancellation" { throw URLError(.notConnectedToInternet) }
                 body["status"] = "cancelled"
                 body["write_committed"] = false
                 body["operation_id"] = payload.context.operationID
@@ -267,7 +298,7 @@ private final class PersonalWatchSyntheticSession: URLSessioning {
                 guard payload.context.confirmationToken == "synthetic-ui-confirmation-token" else {
                     throw URLError(.badServerResponse)
                 }
-                if scenario == "offline_confirmation" { throw URLError(.notConnectedToInternet) }
+                if ["offline_confirmation", "offline_cancellation"].contains(scenario) { throw URLError(.notConnectedToInternet) }
                 body["operation_id"] = payload.context.operationID
                 if scenario == "expired" {
                     body["status"] = "rejected"

@@ -316,6 +316,20 @@ final class PersonalWatchAppWatchUITests: XCTestCase {
         relaunch()
         openCapture("expense")
         assertNoRestoredConfirmation()
+        assertStatusContains("Gasto cancelado")
+        XCTAssertFalse(app.staticTexts.matching(NSPredicate(
+            format: "label CONTAINS %@", "verifica si hubo un registro previo"
+        )).firstMatch.exists)
+        relaunch()
+        openHistory()
+        let cancellation = app.staticTexts.matching(NSPredicate(
+            format: "label CONTAINS %@", "Gasto cancelado"
+        )).firstMatch
+        reveal(cancellation)
+        XCTAssertTrue(cancellation.waitForExistence(timeout: 5))
+        XCTAssertFalse(app.staticTexts.matching(NSPredicate(
+            format: "label CONTAINS %@", "verifica si hubo un registro previo"
+        )).firstMatch.exists)
     }
 
     func testOfflineExpenseConfirmationCanBeCancelled() {
@@ -327,14 +341,51 @@ final class PersonalWatchAppWatchUITests: XCTestCase {
         assertStatusContains("Sin internet disponible")
         XCTAssertTrue(app.buttons["expense.cancel"].exists)
         cancelExpense()
-        assertStatusContains("Cancelación recibida")
-        assertStatusContains("verifica si hubo un registro previo")
-        XCTAssertFalse(app.staticTexts.matching(NSPredicate(
-            format: "label CONTAINS %@", "no se registró nada"
-        )).firstMatch.exists)
+        assertReceivedUncertainCancellation()
         relaunch()
         openCapture("expense")
         assertNoRestoredConfirmation()
+        assertReceivedUncertainCancellation()
+        relaunch()
+        openHistory()
+        assertHistoryUncertainCancellation()
+    }
+
+    func testUncertainCancellationBulkRetryKeepsWarningAfterRelaunch() {
+        launch(scenario: "offline_cancellation")
+        requestExpensePreview()
+        let confirm = app.buttons["expense.confirm"]
+        reveal(confirm)
+        confirm.tap()
+        assertStatusContains("Sin internet disponible")
+        cancelExpense()
+        assertStatusContains("Cancelación solicitada")
+        assertStatusContains("verifica en Firefly")
+        assertNoRestoredConfirmation()
+        assertNoExpenseAbsenceClaim()
+
+        app.terminate()
+        launch(scenario: "normal")
+        let retry = app.buttons["capture.retryPending"]
+        reveal(retry)
+        XCTAssertTrue(retry.exists)
+        retry.tap()
+        let received = app.staticTexts["home.status"]
+        reveal(received)
+        let summary = XCTNSPredicateExpectation(predicate: NSPredicate(
+            format: "exists == true AND label CONTAINS %@ AND label CONTAINS %@ AND label CONTAINS %@",
+            "1 respuesta(s) recibidas", "Cancelación recibida", "verifica si hubo un registro previo"
+        ), object: received)
+        XCTAssertEqual(XCTWaiter.wait(for: [summary], timeout: 5), .completed)
+        assertNoExpenseAbsenceClaim()
+
+        relaunch()
+        openCapture("expense")
+        assertNoRestoredConfirmation()
+        assertReceivedUncertainCancellation()
+        relaunch()
+        openHistory()
+        assertHistoryUncertainCancellation()
     }
 
     func testExpiredExpensePreviewIsTerminal() {
@@ -369,6 +420,44 @@ final class PersonalWatchAppWatchUITests: XCTestCase {
         XCTAssertTrue(confirm.exists)
         XCTAssertFalse(confirm.isEnabled)
         XCTAssertTrue(app.buttons["expense.cancel"].isEnabled)
+    }
+
+    func testSendingCancellationRestoresRequestedWarningWithoutRetry() {
+        launch(scenario: "expense_cancellation_sending")
+        openCapture("reminder")
+        checkConnection()
+        assertConnectionContains("Servidor accesible")
+        relaunch()
+        openCapture("expense")
+        assertNoRestoredConfirmation()
+        assertStatusContains("Cancelación solicitada")
+        assertStatusContains("verifica en Firefly")
+        assertNoReceivedCancellationClaim()
+        assertNoExpenseAbsenceClaim()
+
+        relaunch()
+        let retry = app.buttons["capture.retryPending"]
+        reveal(retry)
+        retry.tap()
+        let result = app.staticTexts["home.status"]
+        reveal(result)
+        let unchanged = XCTNSPredicateExpectation(predicate: NSPredicate(
+            format: "exists == true AND label == %@", "Sin capturas para reintentar"
+        ), object: result)
+        XCTAssertEqual(XCTWaiter.wait(for: [unchanged], timeout: 5), .completed)
+        assertNoReceivedCancellationClaim()
+
+        relaunch()
+        openHistory()
+        let warning = app.staticTexts.matching(NSPredicate(
+            format: "label CONTAINS %@ AND label CONTAINS %@",
+            "Cancelación solicitada", "verifica en Firefly"
+        )).firstMatch
+        reveal(warning)
+        XCTAssertTrue(warning.waitForExistence(timeout: 5))
+        assertNoRestoredConfirmation()
+        assertNoReceivedCancellationClaim()
+        assertNoExpenseAbsenceClaim()
     }
 
     // MARK: - Watch-specific navigation and native input
@@ -535,6 +624,35 @@ final class PersonalWatchAppWatchUITests: XCTestCase {
     private func assertNoRestoredConfirmation(file: StaticString = #filePath, line: UInt = #line) {
         XCTAssertFalse(app.buttons["expense.confirm"].exists, file: file, line: line)
         XCTAssertFalse(app.buttons["expense.cancel"].exists, file: file, line: line)
+    }
+
+    private func assertReceivedUncertainCancellation(file: StaticString = #filePath, line: UInt = #line) {
+        assertStatusContains("Cancelación recibida", file: file, line: line)
+        assertStatusContains("verifica si hubo un registro previo", file: file, line: line)
+        assertNoExpenseAbsenceClaim(file: file, line: line)
+    }
+
+    private func assertHistoryUncertainCancellation(file: StaticString = #filePath, line: UInt = #line) {
+        let warning = app.staticTexts.matching(NSPredicate(
+            format: "label CONTAINS %@ AND label CONTAINS %@",
+            "Cancelación recibida", "verifica si hubo un registro previo"
+        )).firstMatch
+        reveal(warning)
+        XCTAssertTrue(warning.waitForExistence(timeout: 5), file: file, line: line)
+        XCTAssertFalse(app.buttons["expense.confirm"].exists, file: file, line: line)
+        assertNoExpenseAbsenceClaim(file: file, line: line)
+    }
+
+    private func assertNoExpenseAbsenceClaim(file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertFalse(app.staticTexts.matching(NSPredicate(
+            format: "label CONTAINS %@", "no se registró nada"
+        )).firstMatch.exists, file: file, line: line)
+    }
+
+    private func assertNoReceivedCancellationClaim(file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertFalse(app.staticTexts.matching(NSPredicate(
+            format: "label CONTAINS %@", "Cancelación recibida"
+        )).firstMatch.exists, file: file, line: line)
     }
 
     private func reveal(_ element: XCUIElement) {

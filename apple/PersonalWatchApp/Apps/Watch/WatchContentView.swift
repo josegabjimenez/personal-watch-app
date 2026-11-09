@@ -57,6 +57,7 @@ struct WatchContentView: View {
                         Text(retryMessage)
                             .font(.footnote)
                             .foregroundStyle(.secondary)
+                            .accessibilityIdentifier("home.status")
                     }
                 }
             }
@@ -97,10 +98,12 @@ struct WatchContentView: View {
                         baseURL: credentials.baseURL,
                         outbox: store
                     )
-                    if let message = response.displayMessage ?? response.question { results.append(message) }
+                    if let message = OutboxPresentation.message(for: item, response: response) { results.append(message) }
                     sent += 1
                 } catch {
                     failed += 1
+                    if item.cancellationMayHaveBeenSent == true,
+                       let message = OutboxPresentation.message(for: item) { results.append(message) }
                 }
             }
 
