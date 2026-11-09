@@ -327,7 +327,11 @@ final class PersonalWatchAppWatchUITests: XCTestCase {
         assertStatusContains("Sin internet disponible")
         XCTAssertTrue(app.buttons["expense.cancel"].exists)
         cancelExpense()
-        assertStatusContains("cancelado")
+        assertStatusContains("Cancelación recibida")
+        assertStatusContains("verifica si hubo un registro previo")
+        XCTAssertFalse(app.staticTexts.matching(NSPredicate(
+            format: "label CONTAINS %@", "no se registró nada"
+        )).firstMatch.exists)
         relaunch()
         openCapture("expense")
         assertNoRestoredConfirmation()
