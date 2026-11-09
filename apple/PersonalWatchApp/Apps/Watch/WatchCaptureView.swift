@@ -456,11 +456,10 @@ struct WatchCaptureView: View {
                 summary: summary
             )
             text = item.payload.capture.text
-            let attempt = try await outbox.loadAll().first {
+            confirmationIsSending = try await outbox.loadAll().contains {
                 $0.payload.route == .expense && $0.payload.context.userConfirmation
-                    && $0.payload.context.operationID == operationID
+                    && $0.payload.context.operationID == operationID && $0.status == .sending
             }
-            confirmationIsSending = attempt?.status == .sending
             statusMessage = confirmationIsSending
                 ? "Envío anterior sin resultado · verifica el registro; puedes solicitar cancelación"
                 : (response.displayMessage ?? "Revisa el gasto antes de registrarlo")

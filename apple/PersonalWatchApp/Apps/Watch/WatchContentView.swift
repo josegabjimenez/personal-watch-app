@@ -18,6 +18,7 @@ struct WatchContentView: View {
                         } label: {
                             Label(action.title, systemImage: action.symbolName)
                         }
+                        .accessibilityIdentifier("capture.\(action.rawValue)")
                     }
 
                     NavigationLink {
@@ -25,6 +26,7 @@ struct WatchContentView: View {
                     } label: {
                         Label("Historial", systemImage: "clock.arrow.circlepath")
                     }
+                    .accessibilityIdentifier("history.open")
                 }
 
                 Section {
@@ -48,6 +50,7 @@ struct WatchContentView: View {
                             }
                         }
                         .disabled(isRetrying)
+                        .accessibilityIdentifier("capture.retryPending")
                     }
 
                     if let retryMessage {
@@ -78,7 +81,7 @@ struct WatchContentView: View {
         do {
             let items = try await store.loadDeliverable()
             guard !items.isEmpty else {
-                retryMessage = "Sin pendientes"
+                retryMessage = "Sin capturas para reintentar"
                 return
             }
 
