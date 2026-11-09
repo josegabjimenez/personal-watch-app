@@ -36,6 +36,9 @@ class ReminderConflict(RuntimeError):
 
 def init_db(path: Path) -> None:
     with sqlite3.connect(path) as conn:
+        # Serialize CREATE/ALTER across distinct captures. Existing rows retain
+        # the historical transport; only explicit new inserts choose REST.
+        conn.execute("BEGIN IMMEDIATE")
         conn.execute("""CREATE TABLE IF NOT EXISTS reminder_operation_ledger (
             request_id TEXT PRIMARY KEY,
             payload_hash TEXT NOT NULL,
@@ -46,8 +49,15 @@ def init_db(path: Path) -> None:
             identity_json TEXT,
             task_id TEXT,
             response_json TEXT,
-            updated_at TEXT NOT NULL
+            updated_at TEXT NOT NULL,
+            transport TEXT NOT NULL DEFAULT 'sync_v1',
+            rest_dispatched INTEGER NOT NULL DEFAULT 0
         )""")
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(reminder_operation_ledger)")}
+        if "transport" not in columns:
+            conn.execute("ALTER TABLE reminder_operation_ledger ADD COLUMN transport TEXT NOT NULL DEFAULT 'sync_v1'")
+        if "rest_dispatched" not in columns:
+            conn.execute("ALTER TABLE reminder_operation_ledger ADD COLUMN rest_dispatched INTEGER NOT NULL DEFAULT 0")
 
 
 def _timestamp() -> str:
@@ -62,6 +72,41 @@ def _update(path: Path, request_id: str, **fields: Any) -> None:
             + ", ".join(key + " = ?" for key in fields) + " WHERE request_id = ?",
             (*fields.values(), request_id),
         )
+
+
+def _claim_rest_dispatch(path: Path, request_id: str, binding: str) -> None:
+    """Consume the single REST dispatch before the gateway opens its POST."""
+    with sqlite3.connect(path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        changed = conn.execute("""UPDATE reminder_operation_ledger
+            SET rest_dispatched=1,status='reconciliation_required',updated_at=?
+            WHERE request_id=? AND payload_hash=? AND transport='rest_v1'
+              AND rest_dispatched=0 AND status IN ('ready','writing','uncertain')""",
+            (_timestamp(), request_id, binding)).rowcount
+        if changed != 1:
+            raise ReminderRetryable("reminder_rest_dispatch_already_claimed")
+
+
+def _mark_rest_failure(path: Path, request_id: str, binding: str, *, terminal_response: dict | None = None) -> bool:
+    # A timed-out HTTP worker can still finish its durable callback. Serialize
+    # this read/status write with that callback so it cannot erase the old-code
+    # reconciliation fence after observing the previous unclaimed state.
+    with sqlite3.connect(path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute("""SELECT rest_dispatched FROM reminder_operation_ledger
+            WHERE request_id=? AND payload_hash=? AND transport='rest_v1'""", (request_id, binding)).fetchone()
+        if row is None or type(row[0]) is not int or row[0] not in (0, 1):
+            raise ReminderRetryable("reminder_operation_reconciliation_required")
+        dispatched = row[0] == 1
+        if not dispatched and terminal_response is not None:
+            conn.execute("""UPDATE reminder_operation_ledger SET status='terminal',response_json=?,updated_at=?
+                WHERE request_id=? AND payload_hash=? AND transport='rest_v1'""",
+                (json.dumps(terminal_response, ensure_ascii=False), _timestamp(), request_id, binding))
+        else:
+            conn.execute("""UPDATE reminder_operation_ledger SET status=?,updated_at=?
+                WHERE request_id=? AND payload_hash=? AND transport='rest_v1'""",
+                ("reconciliation_required" if dispatched else "ready", _timestamp(), request_id, binding))
+    return dispatched
 
 
 @contextmanager
@@ -153,19 +198,29 @@ def execute(payload: dict, cfg: Any, *, now: Any) -> dict:
                 raise ReminderConflict("request_id_conflict")
             if row is None:
                 conn.execute("""INSERT INTO reminder_operation_ledger
-                    (request_id,payload_hash,status,command_uuid,temp_id,updated_at)
-                    VALUES (?,?,'unbound',?,?,?)""", (request_id, binding,
+                    (request_id,payload_hash,status,command_uuid,temp_id,updated_at,transport)
+                    VALUES (?,?,'unbound',?,?,?,'rest_v1')""", (request_id, binding,
                         _command_uuid(cfg.secret, "command", request_id, binding),
                         _command_uuid(cfg.secret, "temporary", request_id, binding), _timestamp()))
                 row = conn.execute("SELECT * FROM reminder_operation_ledger WHERE request_id = ?", (request_id,)).fetchone()
             operation = dict(row)
-        if operation["status"] == "reconciliation_required":
+        if operation["status"] == "reconciliation_required" and not (
+                operation["transport"] == "rest_v1" and operation["rest_dispatched"] == 1):
             raise ReminderRetryable("reminder_operation_reconciliation_required")
         if operation["response_json"]:
             result = json.loads(operation["response_json"])
             if result.get("write_committed"):
                 result.update(status="duplicate", duplicate=True)
             return result
+        transport = operation["transport"]
+        if transport not in {"sync_v1", "rest_v1"} or type(operation["rest_dispatched"]) is not int or operation["rest_dispatched"] not in (0, 1):
+            raise ReminderRetryable("reminder_operation_reconciliation_required")
+        if operation["rest_dispatched"] == 1 and (
+                transport != "rest_v1" or not operation["plan_json"] or not operation["identity_json"]
+                or operation["status"] in {"unbound", "interpreting"}):
+            # Lost/contradictory frozen state is not authority to interpret or
+            # dispatch again, including after partial application-state loss.
+            raise ReminderRetryable("reminder_operation_reconciliation_required")
 
         # Missing server credentials are retryable configuration gates. They are
         # never sourced from a desktop connector or another process environment.
@@ -242,13 +297,14 @@ def execute(payload: dict, cfg: Any, *, now: Any) -> dict:
         identity = json.loads(operation["identity_json"]) if operation["identity_json"] else None
         if not cfg.reminder_todoist_inbox_id or (identity is not None and identity.get("inbox_project_id") != cfg.reminder_todoist_inbox_id):
             raise ReminderRetryable("reminder_authorization_pending")
-        dispatched = operation["status"] in {"writing", "uncertain"}
+        dispatched = (operation["rest_dispatched"] == 1 or operation["task_id"] is not None
+                      if transport == "rest_v1" else operation["status"] in {"writing", "uncertain"})
         was_dispatched = dispatched
         try:
             if identity is None:
                 identity = gateway.identity()
                 _update(cfg.ledger_path, request_id, identity_json=json.dumps(identity))
-            was_dispatched = operation["status"] in {"writing", "uncertain"}
+            was_dispatched = dispatched
             if was_dispatched:
                 # Reconcile even after task time elapsed. A missing active task
                 # does not prove a previous POST failed (it may be completed).
@@ -257,29 +313,51 @@ def execute(payload: dict, cfg: Any, *, now: Any) -> dict:
                     response = _saved(payload, plan, receipt)
                     _update(cfg.ledger_path, request_id, status="committed", task_id=receipt["task_id"], response_json=json.dumps(response, ensure_ascii=False))
                     return response
+                if transport == "rest_v1":
+                    # No active match is not proof an earlier REST POST failed.
+                    # A consumed claim never permits another task creation.
+                    _update(cfg.ledger_path, request_id, status="reconciliation_required")
+                    raise ReminderRetryable("reminder_rest_reconciliation_required")
             if datetime.fromisoformat(plan["due"]["start"]) <= now():
                 if was_dispatched:
                     raise ReminderRetryable("reminder_elapsed_requires_reconciliation")
                 response = _no_write(payload, question="La hora ya pasó. ¿Para cuándo lo programo en Bogotá?")
-                _update(cfg.ledger_path, request_id, status="terminal", response_json=json.dumps(response, ensure_ascii=False))
+                if transport == "rest_v1":
+                    if _mark_rest_failure(cfg.ledger_path, request_id, binding, terminal_response=response):
+                        raise ReminderRetryable("reminder_elapsed_requires_reconciliation")
+                else:
+                    _update(cfg.ledger_path, request_id, status="terminal", response_json=json.dumps(response, ensure_ascii=False))
                 return response
             # Commit intent before any POST. The same UUID is reused after every
             # timeout/crash; neither a retry nor a lost ack creates a new command.
-            _update(cfg.ledger_path, request_id, status="writing")
-            dispatched = True
-            receipt = gateway.create_or_reconcile(
-                plan, operation["command_uuid"], operation["temp_id"], identity,
-                external_id=operation["task_id"],
-                on_external_id=lambda task_id: _update(cfg.ledger_path, request_id, task_id=task_id),
-            )
+            if transport == "rest_v1":
+                receipt = gateway.create_rest_or_reconcile(
+                    plan, operation["command_uuid"], identity, external_id=operation["task_id"],
+                    on_before_post=lambda: _claim_rest_dispatch(cfg.ledger_path, request_id, binding),
+                    on_external_id=lambda task_id: _update(cfg.ledger_path, request_id, task_id=task_id),
+                )
+            else:
+                _update(cfg.ledger_path, request_id, status="writing")
+                dispatched = True
+                receipt = gateway.create_or_reconcile(
+                    plan, operation["command_uuid"], operation["temp_id"], identity,
+                    external_id=operation["task_id"],
+                    on_external_id=lambda task_id: _update(cfg.ledger_path, request_id, task_id=task_id),
+                )
         except (RetryableTodoistError, PermanentTodoistError) as exc:
             # The gateway can positively attest this first call stopped before
             # POST. Prior uncertain attempts must remain uncertain even then.
-            if isinstance(exc, PermanentTodoistError) and str(exc) == "todoist_due_elapsed_before_dispatch" and not was_dispatched:
-                response = _no_write(payload, question="La hora ya pasó. ¿Para cuándo lo programo en Bogotá?")
+            elapsed = isinstance(exc, PermanentTodoistError) and str(exc) == "todoist_due_elapsed_before_dispatch" and not was_dispatched
+            response = _no_write(payload, question="La hora ya pasó. ¿Para cuándo lo programo en Bogotá?") if elapsed else None
+            if transport == "rest_v1":
+                dispatched = _mark_rest_failure(cfg.ledger_path, request_id, binding, terminal_response=response)
+                if response is not None and not dispatched:
+                    return response
+            elif response is not None:
                 _update(cfg.ledger_path, request_id, status="terminal", response_json=json.dumps(response, ensure_ascii=False))
                 return response
-            _update(cfg.ledger_path, request_id, status="uncertain" if dispatched else "ready")
+            else:
+                _update(cfg.ledger_path, request_id, status="uncertain" if dispatched else "ready")
             raise ReminderRetryable("reminder_receipt_unverified") from None
         response = _saved(payload, plan, receipt)
         _update(cfg.ledger_path, request_id, status="committed", task_id=receipt["task_id"], response_json=json.dumps(response, ensure_ascii=False))

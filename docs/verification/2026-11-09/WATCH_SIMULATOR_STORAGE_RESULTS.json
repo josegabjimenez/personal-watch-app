@@ -1,0 +1,160 @@
+{
+  "case_count": 26,
+  "cases": {
+    "testConnectionCheckDoesNotRetryFourFailureReminder": {
+      "audit_present": true,
+      "health_gets": 1,
+      "outbox_rows": 1,
+      "posts": 0
+    },
+    "testEligibleBulkRetryUsesOriginalAndThenBecomesNoOp": {
+      "audit_present": true,
+      "health_gets": 0,
+      "outbox_rows": 1,
+      "posts": 2
+    },
+    "testExpenseCancellationPersistsAcrossRelaunch": {
+      "audit_present": true,
+      "health_gets": 0,
+      "outbox_rows": 2,
+      "posts": 2
+    },
+    "testExpensePreviewNeedsExplicitConfirmationAndCommitsOnce": {
+      "audit_present": true,
+      "health_gets": 0,
+      "outbox_rows": 2,
+      "posts": 2
+    },
+    "testExpiredExpensePreviewIsTerminal": {
+      "audit_present": true,
+      "health_gets": 0,
+      "outbox_rows": 2,
+      "posts": 2
+    },
+    "testExpiredReminderNoWriteReleasesEditorAcrossRelaunch": {
+      "audit_present": true,
+      "health_gets": 0,
+      "outbox_rows": 1,
+      "posts": 1
+    },
+    "testFourDNSFailuresCanBeRetainedAfterCancellingFirst": {
+      "audit_present": true,
+      "health_gets": 1,
+      "outbox_rows": 1,
+      "posts": 0
+    },
+    "testFreshWatchHistoryIsEmptyAndReadOnly": {
+      "audit_present": false,
+      "outbox_rows": 0,
+      "transport_assertion": "not exercised"
+    },
+    "testGroceryCommitClearsEditor": {
+      "audit_present": true,
+      "health_gets": 0,
+      "outbox_rows": 1,
+      "posts": 1
+    },
+    "testGrocerySixthExplicitRetryPreservesOriginalAndDistinctDraft": {
+      "audit_present": true,
+      "health_gets": 0,
+      "outbox_rows": 1,
+      "posts": 6
+    },
+    "testHealthDisabledGateIsNotClaimedReady": {
+      "audit_present": true,
+      "health_gets": 1,
+      "outbox_rows": 0,
+      "posts": 0
+    },
+    "testHealthHTTPFailureIsSpecific": {
+      "audit_present": true,
+      "health_gets": 1,
+      "outbox_rows": 0,
+      "posts": 0
+    },
+    "testHealthReadyShowsGateEnabled": {
+      "audit_present": true,
+      "health_gets": 1,
+      "outbox_rows": 0,
+      "posts": 0
+    },
+    "testHealthTLSFailureKeepsSecureConnection": {
+      "audit_present": true,
+      "health_gets": 1,
+      "outbox_rows": 0,
+      "posts": 0
+    },
+    "testHealthTimeoutIsSpecific": {
+      "audit_present": true,
+      "health_gets": 1,
+      "outbox_rows": 0,
+      "posts": 0
+    },
+    "testOfflineExpenseConfirmationCanBeCancelled": {
+      "audit_present": true,
+      "health_gets": 0,
+      "outbox_rows": 3,
+      "posts": 3
+    },
+    "testRefreshedExpenseCurrentSendingStaysDisabledOnRelaunch": {
+      "audit_present": true,
+      "health_gets": 1,
+      "outbox_rows": 3,
+      "posts": 0
+    },
+    "testReminderShowsBogotaScheduleWithNotificationStillPending": {
+      "audit_present": true,
+      "health_gets": 0,
+      "outbox_rows": 1,
+      "posts": 1
+    },
+    "testRetainedReminderAllowsOnlyExplicitDifferentIntent": {
+      "audit_present": true,
+      "health_gets": 1,
+      "outbox_rows": 2,
+      "posts": 1
+    },
+    "testRetainedReminderIsExcludedFromBulkRetry": {
+      "audit_present": true,
+      "health_gets": 1,
+      "outbox_rows": 1,
+      "posts": 0
+    },
+    "testSendingCancellationRestoresRequestedWarningWithoutRetry": {
+      "audit_present": true,
+      "health_gets": 1,
+      "outbox_rows": 3,
+      "posts": 0
+    },
+    "testServerPendingReminderCanBeRetainedWithoutRetry": {
+      "audit_present": true,
+      "health_gets": 0,
+      "outbox_rows": 1,
+      "posts": 1
+    },
+    "testUncertainCancellationBulkRetryKeepsWarningAfterRelaunch": {
+      "audit_present": true,
+      "health_gets": 0,
+      "outbox_rows": 3,
+      "posts": 4
+    },
+    "testUnconfiguredWatchChecksWithoutSending": {
+      "audit_present": false,
+      "outbox_rows": 0,
+      "transport_assertion": "not exercised"
+    },
+    "testUnknownSendingReminderCanBeRetainedWithoutAnotherSend": {
+      "audit_present": true,
+      "health_gets": 1,
+      "outbox_rows": 1,
+      "posts": 0
+    },
+    "testWatchHomeLaunchesWithApprovedActions": {
+      "audit_present": false,
+      "outbox_rows": 0,
+      "transport_assertion": "not exercised"
+    }
+  },
+  "status": "pass",
+  "synthetic_only": true
+}

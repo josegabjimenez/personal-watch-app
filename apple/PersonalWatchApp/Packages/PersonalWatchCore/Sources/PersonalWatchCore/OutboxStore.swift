@@ -29,8 +29,14 @@ public struct OutboxItem: Codable, Equatable, Identifiable, Sendable {
     public var confirmationInvalidatedAt: String?
     public var confirmationInvalidationReason: String?
     public var cancellationMayHaveBeenSent: Bool?
+    /// Local review choice only. The payload and remote delivery result remain intact.
+    public var retrySuppressedAt: String?
     public var createdAt: String
     public var updatedAt: String
+
+    public var isRetrySuppressed: Bool {
+        payload.route == .reminder && retrySuppressedAt != nil
+    }
 
     public init(
         payload: CapturePayloadV1,
@@ -51,6 +57,7 @@ public struct OutboxItem: Codable, Equatable, Identifiable, Sendable {
         self.confirmationInvalidatedAt = nil
         self.confirmationInvalidationReason = nil
         self.cancellationMayHaveBeenSent = nil
+        self.retrySuppressedAt = nil
         self.createdAt = createdAt
         self.updatedAt = updatedAt
     }
@@ -65,6 +72,7 @@ public struct OutboxItem: Codable, Equatable, Identifiable, Sendable {
         case confirmationInvalidatedAt = "confirmation_invalidated_at"
         case confirmationInvalidationReason = "confirmation_invalidation_reason"
         case cancellationMayHaveBeenSent = "cancellation_may_have_been_sent"
+        case retrySuppressedAt = "retry_suppressed_at"
         case createdAt = "created_at"
         case updatedAt = "updated_at"
     }
@@ -76,6 +84,7 @@ public enum OutboxStoreError: Error, Equatable, LocalizedError {
     case deliveryInProgress
     case notDeliverable
     case operationCancelled
+    case captureRetainedForReview
 
     public var errorDescription: String? {
         switch self {
@@ -84,6 +93,7 @@ public enum OutboxStoreError: Error, Equatable, LocalizedError {
         case .deliveryInProgress: return "Envío en curso · resultado pendiente de verificar"
         case .notDeliverable: return "Esta captura ya no se puede enviar"
         case .operationCancelled: return "Confirmación cancelada en este dispositivo"
+        case .captureRetainedForReview: return "Conservado en Historial · reintentos detenidos en este dispositivo"
         }
     }
 }
@@ -189,6 +199,7 @@ public actor FileOutboxStore {
                 throw OutboxStoreError.notEnqueued
             }
             guard items[index].payload == payload else { throw OutboxStoreError.requestIDConflict }
+            guard !items[index].isRetrySuppressed else { throw OutboxStoreError.captureRetainedForReview }
             if items[index].lastResponse?.status == "needs_confirmation" {
                 if let operationID = items[index].lastResponse?.operationID, isCancelled(operationID, in: items) {
                     throw OutboxStoreError.operationCancelled
@@ -244,6 +255,34 @@ public actor FileOutboxStore {
         }
     }
 
+    /// Preserve a selected reminder for review without claiming cancellation,
+    /// task absence, or success. An already-running request may still finish;
+    /// its late result must keep this local retry suppression metadata.
+    @discardableResult
+    public func retainReminderForReview(requestID: String, now: String) throws -> OutboxItem {
+        try withExclusiveFileLock {
+            var items = try loadAllUnlocked()
+            guard let index = items.firstIndex(where: { $0.id == requestID }) else {
+                throw OutboxStoreError.notEnqueued
+            }
+            let item = items[index]
+            guard item.payload.route == .reminder,
+                  OutboxDeliveryService.isSafeRequest(item.payload),
+                  !item.payload.context.userConfirmation,
+                  item.payload.context.userCancellation != true else {
+                throw OutboxStoreError.notDeliverable
+            }
+            if item.isRetrySuppressed { return item }
+            guard [.pending, .failed, .sending].contains(item.status) else {
+                throw OutboxStoreError.notDeliverable
+            }
+            items[index].retrySuppressedAt = now
+            items[index].updatedAt = now
+            try saveAllUnlocked(items)
+            return items[index]
+        }
+    }
+
     private func loadAllUnlocked() throws -> [OutboxItem] {
         guard FileManager.default.fileExists(atPath: fileURL.path) else { return [] }
         let data = try Data(contentsOf: fileURL)
@@ -254,7 +293,8 @@ public actor FileOutboxStore {
     public func loadDeliverable(maxAttempts: Int = 5, limit: Int = 10) throws -> [OutboxItem] {
         let items = try loadAll()
         return Array(items.filter { item in
-            guard [.pending, .failed].contains(item.status), item.attempts < maxAttempts else { return false }
+            guard !item.isRetrySuppressed, [.pending, .failed].contains(item.status),
+                  item.attempts < maxAttempts else { return false }
             if item.payload.route == .expense, item.payload.context.userConfirmation,
                let operationID = item.payload.context.operationID, isCancelled(operationID, in: items) { return false }
             return true
