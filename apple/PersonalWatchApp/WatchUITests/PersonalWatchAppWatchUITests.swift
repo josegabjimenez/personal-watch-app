@@ -289,6 +289,64 @@ final class PersonalWatchAppWatchUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Respuesta recibida"].exists)
     }
 
+    func testUnsafeInitialExpenseCanBeRetainedAndReplacedAfterRelaunch() {
+        launch(scenario: "expense_unsafe_preview")
+        enterCapture("expense", text: "45 mil en taxi")
+        app.buttons["capture.send"].tap()
+        assertStatusContains("Respuesta no segura")
+        assertNoRestoredConfirmation()
+        XCTAssertFalse(app.textFields["capture.text"].isEnabled)
+
+        let newExpense = app.buttons["capture.newExpense"]
+        reveal(newExpense)
+        XCTAssertTrue(newExpense.isEnabled)
+        newExpense.tap()
+        let retain = app.buttons["Conservar y abrir nuevo"].firstMatch
+        reveal(retain)
+        XCTAssertTrue(retain.waitForExistence(timeout: 5))
+        retain.tap()
+        assertStatusContains("Anterior conservado en Historial")
+        XCTAssertTrue(app.textFields["capture.text"].isEnabled)
+        XCTAssertFalse(app.buttons["capture.send"].isEnabled)
+
+        relaunch()
+        let retry = app.buttons["capture.retryPending"]
+        reveal(retry)
+        retry.tap()
+        let none = app.staticTexts["Sin capturas para reintentar"]
+        reveal(none)
+        XCTAssertTrue(none.waitForExistence(timeout: 5))
+
+        relaunch()
+        enterCapture("expense", text: "45 mil en Uber")
+        app.buttons["capture.send"].tap()
+        let confirm = app.buttons["expense.confirm"]
+        reveal(confirm)
+        XCTAssertTrue(confirm.waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["capture.newExpense"].exists)
+        cancelExpense()
+        assertStatusContains("Gasto cancelado")
+
+        relaunch()
+        openHistory()
+        let original = app.staticTexts["45 mil en taxi"]
+        reveal(original)
+        XCTAssertTrue(original.waitForExistence(timeout: 5))
+        let retained = app.staticTexts["Conservado · sin reintentos"]
+        reveal(retained)
+        XCTAssertTrue(retained.exists)
+        let uncertainty = app.staticTexts["El resultado del envío anterior sigue por verificar."]
+        reveal(uncertainty)
+        XCTAssertTrue(uncertainty.exists)
+        let details = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "history.expenseDetails.")).firstMatch
+        reveal(details)
+        details.tap()
+        let failure = app.staticTexts["Último error: unsafe_response"]
+        reveal(failure)
+        XCTAssertTrue(failure.exists)
+        XCTAssertTrue(app.staticTexts["Estado del envío: Por verificar"].exists)
+    }
+
     func testExpensePreviewNeedsExplicitConfirmationAndCommitsOnce() {
         launch()
         requestExpensePreview()

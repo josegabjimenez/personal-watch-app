@@ -36,6 +36,7 @@ POST_COUNTS = {
     "testExpiredReminderNoWriteReleasesEditorAcrossRelaunch": 1,
     "testEligibleBulkRetryUsesOriginalAndThenBecomesNoOp": 2,
     "testExpensePreviewNeedsExplicitConfirmationAndCommitsOnce": 2,
+    "testUnsafeInitialExpenseCanBeRetainedAndReplacedAfterRelaunch": 3,
     "testExpenseCancellationPersistsAcrossRelaunch": 2,
     "testOfflineExpenseConfirmationCanBeCancelled": 3,
     "testUncertainCancellationBulkRetryKeepsWarningAfterRelaunch": 4,
@@ -207,6 +208,28 @@ def validate_case(method, case_id, root):
         require(len(rows) == 1 and rows[0]["status"] == "sent" and rows[0]["attempts"] == 2, "Bulk replay changed identity")
         require(posts[0]["request_id"] == posts[1]["request_id"] and posts[0]["body_sha256"] == posts[1]["body_sha256"],
                 "Bulk retry changed original request/body")
+    if method == "testUnsafeInitialExpenseCanBeRetainedAndReplacedAfterRelaunch":
+        require(len(rows) == 3 and len({entry["request_id"] for entry in posts}) == 3,
+                "Original draft was replayed or the new expense reused an identity")
+        original, fresh, cancellation = (indexed[entry["request_id"]] for entry in posts)
+        require(original["payload"]["capture"]["text"] == "45 mil en taxi"
+                and original["created_at"] == original["payload"]["created_at"], "Retained capture changed")
+        require(original["status"] == "failed" and original["attempts"] == 1
+                and original["last_error"] == "unsafe_response"
+                and original.get("retry_suppressed_at") and "last_response" not in original,
+                "Retained state or uncertainty changed")
+        require(fresh["payload"]["capture"]["text"] == "45 mil en Uber" and fresh["status"] == "sent",
+                "Distinct draft did not receive a preview")
+        preview = fresh["last_response"]
+        context = cancellation["payload"]["context"]
+        receipt = cancellation["last_response"]
+        require(preview["status"] == "needs_confirmation" and preview["write_committed"] is False
+                and context["user_cancellation"] is True and cancellation["status"] == "sent"
+                and receipt["status"] == "cancelled" and receipt["write_committed"] is False
+                and preview["operation_id"] == context["operation_id"] == receipt["operation_id"],
+                "The new preview and its cancellation must correlate and remain no-write")
+        require(all(row["payload"]["context"]["user_confirmation"] is False for row in rows),
+                "An expense was confirmed without tapping Registrar")
     if method in {"testOfflineExpenseConfirmationCanBeCancelled",
                   "testUncertainCancellationBulkRetryKeepsWarningAfterRelaunch",
                   "testExpenseCancellationPersistsAcrossRelaunch"}:

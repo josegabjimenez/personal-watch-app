@@ -311,6 +311,15 @@ private final class PersonalWatchSyntheticSession: URLSessioning {
                 body["plan"] = ["would_write": true, "side_effects": ["firefly.withdrawal.write"]]
                 body["external_ids"] = ["firefly_journal_id": "synthetic-journal"]
             } else {
+                if scenario == "expense_unsafe_preview", payload.capture.text == "45 mil en taxi" {
+                    // Reproduce the disabled-domain HTTP 200 shape: a dry-run
+                    // plan without a confirmation token for a live preview request.
+                    return try response([
+                        "status": "accepted", "dry_run": true, "write_committed": false,
+                        "request_id": payload.requestID, "domain": payload.route.domain.rawValue,
+                        "plan": ["would_write": false, "side_effects": []]
+                    ], status: 200, url: url)
+                }
                 let hexadecimal = payload.requestID.lowercased().filter { "0123456789abcdef".contains($0) }
                 let operationSuffix = String((hexadecimal + String(repeating: "0", count: 32)).prefix(32))
                 body["status"] = "needs_confirmation"

@@ -39,12 +39,14 @@ struct WatchHistoryView: View {
                         if item.isRetrySuppressed {
                             Label("Conservado · sin reintentos", systemImage: "tray.full")
                                 .font(.footnote)
-                            Text("El resultado anterior se conserva; no se canceló en Todoist.")
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
+                            if let detail = OutboxPresentation.retentionDetail(for: item) {
+                                Text(detail)
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
                         }
 
-                        if item.payload.route == .reminder {
+                        if item.payload.route == .reminder || (item.payload.route == .expense && item.isRetrySuppressed) {
                             NavigationLink {
                                 ScrollView {
                                     VStack(alignment: .leading, spacing: 8) {
@@ -68,7 +70,8 @@ struct WatchHistoryView: View {
                                 Label("Datos de captura", systemImage: "info.circle")
                             }
                             .font(.footnote)
-                            .accessibilityIdentifier("history.reminderDetails.\(item.id)")
+                            .accessibilityIdentifier(item.payload.route == .expense
+                                                     ? "history.expenseDetails.\(item.id)" : "history.reminderDetails.\(item.id)")
                         }
 
                         if let message = OutboxPresentation.message(for: item) {
