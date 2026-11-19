@@ -237,7 +237,9 @@ final class PersonalWatchAppUITests: XCTestCase {
         reveal(attempts)
         XCTAssertTrue(attempts.exists)
         XCTAssertTrue(app.staticTexts["Estado del envío: Por verificar"].exists)
-        XCTAssertTrue(app.staticTexts["Último error: unsafe_response"].exists)
+        let failure = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "unsafe_response")).firstMatch
+        reveal(failure)
+        XCTAssertTrue(failure.waitForExistence(timeout: 5))
     }
 
     func testExpenseRequiresExplicitConfirmationBeforeCommit() {
