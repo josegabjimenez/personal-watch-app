@@ -51,6 +51,8 @@ class FakeGateway:
         self.lose_ack = False
         self.fail_before_post = False
         self.before_post = None
+        self.transports = []
+        self.crash_after_claim = False
 
     def identity(self):
         return IDENTITY.copy()
@@ -64,6 +66,18 @@ class FakeGateway:
         return {**row, "duplicate": True} if row else None
 
     def create_or_reconcile(self, plan, command_uuid, temp_id, identity, external_id=None, on_external_id=None):
+        self.transports.append("sync_v1")
+        return self._create(plan, command_uuid, temp_id, identity, on_external_id)
+
+    def create_rest_or_reconcile(self, plan, command_uuid, identity, external_id=None, *, on_before_post, on_external_id=None):
+        self.transports.append("rest_v1")
+        on_before_post()
+        if self.crash_after_claim:
+            self.crash_after_claim = False
+            raise SystemExit("synthetic process death before REST POST")
+        return self._create(plan, command_uuid, None, identity, on_external_id)
+
+    def _create(self, plan, command_uuid, temp_id, identity, on_external_id):
         if self.before_post:
             self.before_post(plan, command_uuid, temp_id, identity)
         self.posts.append((command_uuid, temp_id, json.loads(json.dumps(plan))))
@@ -108,13 +122,25 @@ class ReminderCaptureTests(unittest.TestCase):
             conn.row_factory = sqlite3.Row
             return dict(conn.execute("SELECT * FROM reminder_operation_ledger").fetchone())
 
+    def seed_legacy(self, value=None):
+        value = value or payload()
+        reminders.init_db(self.cfg.ledger_path)
+        binding = hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
+        with sqlite3.connect(self.cfg.ledger_path) as conn:
+            conn.execute("""INSERT INTO reminder_operation_ledger
+                (request_id,payload_hash,status,command_uuid,temp_id,updated_at)
+                VALUES (?,?,'unbound',?,?,?)""", (value["request_id"], binding,
+                    "96e26ce3-5cd1-4b7b-a393-2f64abac5bdf", "c055f623-d8b0-44cf-b47a-856684b1293c", NOW.isoformat()))
+
     def test_exact_plan_and_command_are_durable_before_post_and_receipt_is_truthful(self):
         def before(plan, command, temp_id, identity):
             op = self.operation()
-            self.assertEqual(op["status"], "writing")
+            self.assertEqual(op["status"], "reconciliation_required")
+            self.assertEqual(op["transport"], "rest_v1")
+            self.assertEqual(op["rest_dispatched"], 1)
             self.assertEqual(json.loads(op["plan_json"]), plan)
             self.assertEqual(op["command_uuid"], command)
-            self.assertEqual(op["temp_id"], temp_id)
+            self.assertIsNone(temp_id)  # REST does not transmit the retained legacy temp UUID.
             self.assertEqual(json.loads(op["identity_json"]), identity)
         self.gateway.before_post = before
         with mock.patch.object(srv, "run_aura_helper") as legacy:
@@ -213,7 +239,7 @@ class ReminderCaptureTests(unittest.TestCase):
         self.gateway.crash_after_post = True
         with self.assertRaises(SystemExit):
             self.execute()
-        self.assertEqual(self.operation()["status"], "writing")
+        self.assertEqual(self.operation()["status"], "reconciliation_required")
         self.clock.return_value = datetime.fromisoformat("2026-11-01T16:00:00-05:00")
         result = self.execute()
         self.assertTrue(result["write_committed"])
@@ -233,12 +259,183 @@ class ReminderCaptureTests(unittest.TestCase):
         self.assertIsNone(self.operation()["response_json"])
 
     def test_retry_before_due_reuses_same_uuid_and_temp_id(self):
+        self.seed_legacy()
         self.gateway.fail_before_post = True
         with self.assertRaises(srv.WriteExecutionError): self.execute()
         self.gateway.fail_before_post = False
         self.execute()
         self.assertEqual(self.gateway.posts[0], self.gateway.posts[1])
         self.assertEqual(self.model.call_count, 1)
+
+    def test_existing_legacy_row_keeps_sync_transport_and_identifiers(self):
+        self.seed_legacy()
+        before = self.operation()
+        self.execute()
+        after = self.operation()
+        self.assertEqual(self.gateway.transports, ["sync_v1"])
+        self.assertEqual(after["transport"], "sync_v1")
+        self.assertEqual(after["rest_dispatched"], 0)
+        self.assertEqual((after["command_uuid"], after["temp_id"]), (before["command_uuid"], before["temp_id"]))
+
+    def test_rest_unknown_outcome_is_forever_readonly_even_if_status_becomes_ready(self):
+        self.gateway.fail_before_post = True
+        with self.assertRaises(srv.WriteExecutionError): self.execute()
+        first = self.operation()
+        self.assertEqual((first["transport"], first["rest_dispatched"], first["status"]), ("rest_v1", 1, "reconciliation_required"))
+        budget = Path(str(self.cfg.ledger_path) + ".reminder-ai-budget.sqlite3")
+        budget_before = budget.read_bytes()
+        witness_before = Path(str(budget) + ".reminder-budget-initialized").read_bytes()
+        reminders._update(self.cfg.ledger_path, payload()["request_id"], status="ready")
+        self.gateway.fail_before_post = False
+        for _ in range(2):
+            with self.assertRaises(srv.WriteExecutionError): self.execute()
+        after = self.operation()
+        self.assertEqual(len(self.gateway.posts), 1)
+        self.assertEqual(self.gateway.transports, ["rest_v1"])
+        self.assertEqual(self.model.call_count, 1)
+        self.assertEqual(after["status"], "reconciliation_required")
+        self.assertEqual((after["plan_json"], after["command_uuid"], after["temp_id"]), (first["plan_json"], first["command_uuid"], first["temp_id"]))
+        self.assertEqual(budget.read_bytes(), budget_before)
+        self.assertEqual(Path(str(budget) + ".reminder-budget-initialized").read_bytes(), witness_before)
+
+    def test_rest_crash_after_claim_before_post_is_fenced_from_old_code_and_retry(self):
+        self.gateway.crash_after_claim = True
+        with self.assertRaises(SystemExit): self.execute()
+        first = self.operation()
+        self.assertEqual(first["status"], "reconciliation_required")
+        self.assertEqual(first["rest_dispatched"], 1)
+        for _ in range(2):
+            with self.assertRaises(srv.WriteExecutionError): self.execute()
+        self.assertEqual(self.gateway.posts, [])
+        self.assertEqual(self.gateway.transports, ["rest_v1"])
+        self.assertEqual(self.model.call_count, 1)
+        self.assertEqual(self.operation()["command_uuid"], first["command_uuid"])
+
+    def test_rest_preflight_failure_without_claim_can_retry_same_frozen_plan(self):
+        with mock.patch.object(self.gateway, "create_rest_or_reconcile", side_effect=RetryableTodoistError("preflight unavailable")):
+            with self.assertRaises(srv.WriteExecutionError): self.execute()
+        self.assertEqual((self.operation()["status"], self.operation()["rest_dispatched"]), ("ready", 0))
+        self.assertTrue(self.execute()["write_committed"])
+        self.assertEqual(len(self.gateway.posts), 1)
+        self.assertEqual(self.model.call_count, 1)
+
+    def test_consumed_rest_claim_with_missing_or_inconsistent_frozen_state_never_interprets(self):
+        self.seed_legacy()
+        for transport, status, plan, identity in (
+            ("rest_v1", "reconciliation_required", None, None),
+            ("rest_v1", "unbound", "{}", "{}"),
+            ("rest_v1", "interpreting", "{}", "{}"),
+            ("sync_v1", "ready", None, None),
+        ):
+            with self.subTest(transport=transport, status=status):
+                reminders._update(self.cfg.ledger_path, payload()["request_id"], transport=transport,
+                    rest_dispatched=1, status=status, plan_json=plan, identity_json=identity)
+                with self.assertRaises(srv.WriteExecutionError): self.execute()
+        self.model.assert_not_called()
+        self.assertEqual(self.gateway.posts, [])
+
+    def test_rest_dispatch_claim_is_atomic_compare_and_set(self):
+        with mock.patch.object(self.gateway, "create_rest_or_reconcile", side_effect=SystemExit):
+            with self.assertRaises(SystemExit): self.execute()
+        operation = self.operation()
+        def claim():
+            try:
+                reminders._claim_rest_dispatch(self.cfg.ledger_path, payload()["request_id"], operation["payload_hash"])
+                return "claimed"
+            except reminders.ReminderRetryable:
+                return "blocked"
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            self.assertEqual(sorted(pool.map(lambda _: claim(), range(2))), ["blocked", "claimed"])
+        self.assertEqual((self.operation()["rest_dispatched"], self.operation()["status"]), (1, "reconciliation_required"))
+        self.assertEqual(self.gateway.posts, [])
+
+    def test_timeout_status_transaction_cannot_erase_a_late_dispatch_fence(self):
+        with mock.patch.object(self.gateway, "create_rest_or_reconcile", side_effect=SystemExit):
+            with self.assertRaises(SystemExit): self.execute()
+        operation = self.operation()
+        read, release, attempting = threading.Event(), threading.Event(), threading.Event()
+        original_timestamp = reminders._timestamp
+        def paused_timestamp():
+            if threading.current_thread().name == "synthetic-failure":
+                read.set()
+                self.assertTrue(release.wait(2))
+            return original_timestamp()
+        failures = []
+        def failure():
+            failures.append(reminders._mark_rest_failure(self.cfg.ledger_path, payload()["request_id"], operation["payload_hash"]))
+        def late_claim():
+            attempting.set()
+            reminders._claim_rest_dispatch(self.cfg.ledger_path, payload()["request_id"], operation["payload_hash"])
+        with mock.patch.object(reminders, "_timestamp", side_effect=paused_timestamp):
+            worker = threading.Thread(target=failure, name="synthetic-failure")
+            worker.start()
+            self.assertTrue(read.wait(1))
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                claim = pool.submit(late_claim)
+                self.assertTrue(attempting.wait(1))
+                try:
+                    with self.assertRaises(concurrent.futures.TimeoutError): claim.result(timeout=0.05)
+                finally:
+                    release.set()
+                claim.result(timeout=2)
+            worker.join(timeout=2)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(failures, [False])
+        self.assertEqual((self.operation()["rest_dispatched"], self.operation()["status"]), (1, "reconciliation_required"))
+
+    def test_atomic_elapsed_terminalization_blocks_late_claim_and_preserves_consumed_fence(self):
+        with mock.patch.object(self.gateway, "create_rest_or_reconcile", side_effect=SystemExit):
+            with self.assertRaises(SystemExit): self.execute()
+        operation = self.operation()
+        response = reminders._no_write(payload(), question="Hora transcurrida")
+        self.assertFalse(reminders._mark_rest_failure(self.cfg.ledger_path, payload()["request_id"], operation["payload_hash"], terminal_response=response))
+        with self.assertRaises(reminders.ReminderRetryable):
+            reminders._claim_rest_dispatch(self.cfg.ledger_path, payload()["request_id"], operation["payload_hash"])
+        self.assertEqual((self.operation()["status"], self.operation()["rest_dispatched"]), ("terminal", 0))
+        self.assertEqual(json.loads(self.operation()["response_json"]), response)
+        reminders._update(self.cfg.ledger_path, payload()["request_id"], status="ready", response_json=None)
+        reminders._claim_rest_dispatch(self.cfg.ledger_path, payload()["request_id"], operation["payload_hash"])
+        self.assertTrue(reminders._mark_rest_failure(self.cfg.ledger_path, payload()["request_id"], operation["payload_hash"], terminal_response=response))
+        self.assertEqual((self.operation()["status"], self.operation()["rest_dispatched"], self.operation()["response_json"]), ("reconciliation_required", 1, None))
+
+    def test_elapsed_preflight_cannot_terminalize_a_late_consumed_rest_claim(self):
+        with mock.patch.object(self.gateway, "create_rest_or_reconcile", side_effect=SystemExit):
+            with self.assertRaises(SystemExit): self.execute()
+        original = self.operation()
+        self.clock.return_value = datetime.fromisoformat("2026-10-30T15:00:00-05:00")
+        def late_gateway(cfg):
+            reminders._claim_rest_dispatch(cfg.ledger_path, payload()["request_id"], original["payload_hash"])
+            return self.gateway
+        with mock.patch.object(reminders, "_gateway", side_effect=late_gateway):
+            with self.assertRaises(srv.WriteExecutionError): self.execute()
+        self.assertEqual((self.operation()["status"], self.operation()["rest_dispatched"], self.operation()["response_json"]), ("reconciliation_required", 1, None))
+        self.assertEqual(self.gateway.posts, [])
+        self.assertEqual(self.model.call_count, 1)
+
+    def test_first_legacy_preflight_expiry_remains_terminal_without_any_post(self):
+        self.seed_legacy()
+        with mock.patch.object(self.gateway, "create_or_reconcile", side_effect=PermanentTodoistError("todoist_due_elapsed_before_dispatch")):
+            response = self.execute()
+        self.assertFalse(response["write_committed"])
+        self.assertEqual((self.operation()["transport"], self.operation()["status"], self.operation()["rest_dispatched"]), ("sync_v1", "terminal", 0))
+        self.assertEqual(self.gateway.posts, [])
+        self.assertEqual(self.model.call_count, 1)
+
+    def test_atomic_schema_migration_preserves_existing_rows_during_concurrent_init(self):
+        path = Path(self.directory.name) / "legacy-operation.sqlite"
+        with sqlite3.connect(path) as conn:
+            conn.execute("""CREATE TABLE reminder_operation_ledger (
+                request_id TEXT PRIMARY KEY,payload_hash TEXT NOT NULL,status TEXT NOT NULL,
+                command_uuid TEXT NOT NULL UNIQUE,temp_id TEXT NOT NULL UNIQUE,plan_json TEXT,
+                identity_json TEXT,task_id TEXT,response_json TEXT,updated_at TEXT NOT NULL)""")
+            original = ("legacy-unknown", "bound-hash", "uncertain", "old-command", "old-temp", "old-plan", "old-identity", None, None, "old-time")
+            conn.execute("INSERT INTO reminder_operation_ledger VALUES(?,?,?,?,?,?,?,?,?,?)", original)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+            list(pool.map(lambda _: reminders.init_db(path), range(8)))
+        with sqlite3.connect(path) as conn:
+            row = conn.execute("SELECT * FROM reminder_operation_ledger").fetchone()
+        self.assertEqual(row[:10], original)
+        self.assertEqual(row[10:], ("sync_v1", 0))
 
     def test_frozen_plan_recovery_does_not_require_model_credentials_again(self):
         self.gateway.lose_ack = True
@@ -258,9 +455,10 @@ class ReminderCaptureTests(unittest.TestCase):
         self.assertEqual(self.gateway.posts, [])
 
     def test_crash_after_interpretation_preserves_plan(self):
-        with mock.patch.object(self.gateway, "create_or_reconcile", side_effect=SystemExit):
+        with mock.patch.object(self.gateway, "create_rest_or_reconcile", side_effect=SystemExit):
             with self.assertRaises(SystemExit): self.execute()
-        self.assertEqual(self.operation()["status"], "writing")
+        self.assertEqual(self.operation()["status"], "ready")
+        self.assertEqual(self.operation()["rest_dispatched"], 0)
         self.model.return_value = proposal(title="changed")
         self.execute()
         self.assertEqual(self.model.call_count, 1)
@@ -280,7 +478,7 @@ class ReminderCaptureTests(unittest.TestCase):
         def preflight(*args, **kwargs):
             self.clock.return_value = datetime.fromisoformat("2026-11-01T16:00:00-05:00")
             raise PermanentTodoistError("todoist_due_elapsed_before_dispatch")
-        with mock.patch.object(self.gateway, "create_or_reconcile", side_effect=preflight):
+        with mock.patch.object(self.gateway, "create_rest_or_reconcile", side_effect=preflight):
             result = self.execute()
         self.assertEqual(result["status"], "needs_input")
         self.assertFalse(result["write_committed"])
@@ -288,6 +486,7 @@ class ReminderCaptureTests(unittest.TestCase):
         self.assertEqual(self.gateway.posts, [])
 
     def test_preflight_expiry_never_erases_earlier_uncertain_attempt(self):
+        self.seed_legacy()
         self.gateway.fail_before_post = True
         with self.assertRaises(srv.WriteExecutionError): self.execute()
         with mock.patch.object(self.gateway, "create_or_reconcile", side_effect=PermanentTodoistError("todoist_due_elapsed_before_dispatch")):

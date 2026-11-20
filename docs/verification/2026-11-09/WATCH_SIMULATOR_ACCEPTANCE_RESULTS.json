@@ -1,0 +1,80 @@
+{
+  "app_version": "0.3.6",
+  "build": "11",
+  "candidate_manifest_sha256": "445711ff5bce0064bb05a27dcd337e7574c208a13d4346ea55139e9fad40e3db",
+  "date": "2026-11-09",
+  "human_notification_delivery_verified": false,
+  "limitations": [
+    "Simulator tests use explicit in-memory responses.",
+    "Physical device metadata and selected backups must succeed before any update.",
+    "Real Watch developer connectivity, private DNS, Siri and notification delivery need separate acceptance."
+  ],
+  "new_live_firefly_writes": 0,
+  "new_live_model_calls": 0,
+  "new_live_todoist_tasks": 0,
+  "original_physical_capture_modified": false,
+  "physical_devices_updated": false,
+  "physical_installation_preflight_passed": false,
+  "production_source_files": 30,
+  "production_source_sha256": "691d6cf66a75592ac9cbfd60bcc667054e240bac3bdd54f4b516f4bedee583cc",
+  "pull_request_merged": false,
+  "readiness_scope": "Signed application candidate and simulator acceptance; fresh physical preservation preflight is still required.",
+  "ready_for_coordinated_installation": true,
+  "real_private_dns_verified": false,
+  "real_siri_routing_verified": false,
+  "real_watch_connection_verified": false,
+  "signing": {
+    "fixture_hooks_absent_in_physical_build": true,
+    "profile_expirations_utc": {
+      "iphone": "2026-11-16T18:19:07Z",
+      "watch": "2026-11-16T18:19:04Z"
+    },
+    "runtime_credentials_or_user_state_packaged": false,
+    "same_existing_identity_and_entitlements": true,
+    "selected_hardware_covered": true,
+    "strict_deep_verified": true,
+    "whole_bundle_copy_verified": true
+  },
+  "source_revision": "b7bf9156678bcd36a4418a549b48f7a1cd291e26",
+  "tests": {
+    "core": {
+      "failed": 0,
+      "new_presentation_regressions": 8,
+      "passed": 95
+    },
+    "independent_storage_audit": {
+      "cases": 26,
+      "complete_original_payloads": true,
+      "status": "pass",
+      "uncertain_cancellation_receipts_unmodified": true,
+      "wire_hashes_and_dispatch_counts": true
+    },
+    "ios_ui": {
+      "failed": 0,
+      "passed": 18,
+      "runtime": "iOS27.0",
+      "single_clean_run": true,
+      "skipped": 0,
+      "test_duration_seconds": 459.683
+    },
+    "matched_build11_pair_setup": {
+      "failed": 0,
+      "iphone_build": "11",
+      "passed": 1,
+      "skipped": 0,
+      "status": "pass",
+      "test_duration_seconds": 14.81,
+      "watch_build": "11"
+    },
+    "watch_ui": {
+      "failed": 0,
+      "passed": 26,
+      "runtime": "watchOS27.0",
+      "sdk_toolchain": "Xcode27.2",
+      "single_clean_run": true,
+      "skipped": 0,
+      "test_duration_seconds": 701.274
+    }
+  },
+  "timezone": "America/Bogota"
+}

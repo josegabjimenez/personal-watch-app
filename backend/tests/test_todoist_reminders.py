@@ -119,6 +119,90 @@ class TodoistGatewayTests(unittest.TestCase):
         })
         self.assertTrue(all(response.closed for response in opener.responses))
 
+    def test_rest_creation_uses_json_one_claim_and_exact_get_readback(self):
+        gateway, opener = self.gateway([USER, page(), {"id": "synthetic-task"}, task()])
+        claim, mapping = mock.Mock(), []
+        result = gateway.create_rest_or_reconcile(PLAN, COMMAND, IDENTITY, on_before_post=claim, on_external_id=mapping.append)
+        self.assertEqual(result["task_id"], "synthetic-task")
+        self.assertFalse(result["duplicate"])
+        self.assertEqual(mapping, ["synthetic-task"])
+        claim.assert_called_once_with()
+        req = opener.calls[2][0]
+        self.assertEqual(req.full_url, todoist.API_ROOT + "/tasks")
+        self.assertEqual(req.method, "POST")
+        self.assertEqual(req.get_header("Content-type"), "application/json")
+        self.assertEqual(req.get_header("X-request-id"), COMMAND)
+        self.assertEqual(json.loads(req.data), {
+            "content": PLAN["title"], "description": todoist.marker(COMMAND), "project_id": IDENTITY["inbox_project_id"],
+            "labels": [], "priority": 1, "due_datetime": "2099-10-30T19:00:00Z",
+            "auto_reminder": True, "auto_parse_labels": False})
+        self.assertEqual(opener.calls[3][0].full_url, todoist.API_ROOT + "/tasks/synthetic-task")
+
+    def test_rest_claim_is_immediately_before_post_and_mapping_precedes_get(self):
+        gateway, opener = self.gateway([USER, page(), {"id": "synthetic-task"}, error.URLError("readback unknown")])
+        order = []
+        original_open = opener.open
+        def opened(req, timeout):
+            if req.method == "POST":
+                self.assertEqual(order, ["claimed"])
+            return original_open(req, timeout)
+        opener.open = opened
+        with self.assertRaises(todoist.RetryableTodoistError):
+            gateway.create_rest_or_reconcile(PLAN, COMMAND, IDENTITY,
+                on_before_post=lambda: order.append("claimed"), on_external_id=lambda task_id: order.append(task_id))
+        self.assertEqual(order, ["claimed", "synthetic-task"])
+
+    def test_rest_callback_failure_prevents_post(self):
+        gateway, opener = self.gateway([USER, page()])
+        with self.assertRaises(todoist.RetryableTodoistError):
+            gateway.create_rest_or_reconcile(PLAN, COMMAND, IDENTITY,
+                on_before_post=mock.Mock(side_effect=RuntimeError("synthetic persistence failure")))
+        self.assertTrue(all(req.method == "GET" for req, _ in opener.calls))
+
+    def test_rest_401_never_reposts_or_refreshes_after_dispatch_claim(self):
+        provider = mock.Mock(return_value="old-token")
+        _, opener = self.gateway([USER, page(), self.rejected()])
+        gateway = todoist.TodoistGateway(provider)
+        claim = mock.Mock()
+        with self.assertRaisesRegex(todoist.PermanentTodoistError, "^todoist_authorization_required$"):
+            gateway.create_rest_or_reconcile(PLAN, COMMAND, IDENTITY, on_before_post=claim)
+        claim.assert_called_once_with()
+        self.assertEqual(sum(req.method == "POST" for req, _ in opener.calls), 1)
+        self.assertFalse(any(call.kwargs for call in provider.call_args_list))
+
+    def test_rest_existing_marker_recovers_without_claim_or_post(self):
+        gateway, opener = self.gateway([USER, page([task()])])
+        claim = mock.Mock()
+        result = gateway.create_rest_or_reconcile(PLAN, COMMAND, IDENTITY, on_before_post=claim)
+        self.assertTrue(result["duplicate"])
+        claim.assert_not_called()
+        self.assertTrue(all(req.method == "GET" for req, _ in opener.calls))
+
+    def test_rest_requires_durable_callback_before_any_provider_request(self):
+        gateway, opener = self.gateway([])
+        with self.assertRaisesRegex(todoist.PermanentTodoistError, "dispatch_guard_required"):
+            gateway.create_rest_or_reconcile(PLAN, COMMAND, IDENTITY, on_before_post=None)
+        self.assertEqual(opener.calls, [])
+
+    def test_rest_slow_claim_cannot_post_after_original_deadline(self):
+        gateway, opener = self.gateway([USER, page()], timeout=0.03)
+        entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+        def slow_claim():
+            entered.set(); release.wait(2); finished.set()
+        try:
+            with self.assertRaises(todoist.RetryableTodoistError):
+                gateway.create_rest_or_reconcile(PLAN, COMMAND, IDENTITY, on_before_post=slow_claim)
+            self.assertTrue(entered.is_set())
+        finally:
+            release.set(); self.assertTrue(finished.wait(1))
+        self.assertTrue(all(req.method == "GET" for req, _ in opener.calls))
+
+    def test_rest_readback_keeps_exact_bogota_zone_and_full_task_contract(self):
+        wrong_zone = {"date": "2099-10-30T19:00:00Z", "timezone": "UTC", "is_recurring": False}
+        gateway, _ = self.gateway([USER, page(), {"id": "synthetic-task"}, task(due=wrong_zone)])
+        with self.assertRaisesRegex(todoist.RetryableTodoistError, "readback_mismatch"):
+            gateway.create_rest_or_reconcile(PLAN, COMMAND, IDENTITY, on_before_post=lambda: None)
+
     def test_label_catalog_paginates_only_existing_safe_exact_names(self):
         rows = [{"id": f"label-{i}", "name": name} for i, name in enumerate(("On_Phone", "Someday", "GCal", "unknown"))]
         gateway, opener = self.gateway([page(rows, "opaque/+?=cursor"), page([

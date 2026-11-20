@@ -18,6 +18,7 @@ struct WatchContentView: View {
                         } label: {
                             Label(action.title, systemImage: action.symbolName)
                         }
+                        .accessibilityIdentifier("capture.\(action.rawValue)")
                     }
 
                     NavigationLink {
@@ -25,6 +26,7 @@ struct WatchContentView: View {
                     } label: {
                         Label("Historial", systemImage: "clock.arrow.circlepath")
                     }
+                    .accessibilityIdentifier("history.open")
                 }
 
                 Section {
@@ -48,12 +50,14 @@ struct WatchContentView: View {
                             }
                         }
                         .disabled(isRetrying)
+                        .accessibilityIdentifier("capture.retryPending")
                     }
 
                     if let retryMessage {
                         Text(retryMessage)
                             .font(.footnote)
                             .foregroundStyle(.secondary)
+                            .accessibilityIdentifier("home.status")
                     }
                 }
             }
@@ -78,7 +82,7 @@ struct WatchContentView: View {
         do {
             let items = try await store.loadDeliverable()
             guard !items.isEmpty else {
-                retryMessage = "Sin pendientes"
+                retryMessage = "Sin capturas para reintentar"
                 return
             }
 
@@ -94,10 +98,12 @@ struct WatchContentView: View {
                         baseURL: credentials.baseURL,
                         outbox: store
                     )
-                    if let message = response.displayMessage ?? response.question { results.append(message) }
+                    if let message = OutboxPresentation.message(for: item, response: response) { results.append(message) }
                     sent += 1
                 } catch {
                     failed += 1
+                    if item.cancellationMayHaveBeenSent == true,
+                       let message = OutboxPresentation.message(for: item) { results.append(message) }
                 }
             }
 

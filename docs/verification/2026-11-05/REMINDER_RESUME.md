@@ -1,5 +1,9 @@
 # AI Reminders resumed — November 5, 2026
 
+This records the pre-authorization implementation checkpoint. The later approved
+browser setup, observed consent error and OAuth endpoint correction are tracked in
+[TODOIST_OAUTH_SETUP.md](TODOIST_OAUTH_SETUP.md).
+
 Jose resumed the existing timed-personal-reminder delivery and explicitly chose reuse of the existing app OpenAI key. No new key was created, copied or exposed. The existing isolated branch/worktree and PR #1 are retained. Mercado's owner released service ownership with a path-only handoff; its last independent deployment check was November 4, and Jose accepted current Mercado use November 5. Grocery improvements remain deferred.
 
 ## Reviewable code

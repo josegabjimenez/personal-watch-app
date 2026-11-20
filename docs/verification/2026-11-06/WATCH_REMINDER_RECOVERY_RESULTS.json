@@ -1,0 +1,102 @@
+{
+  "app_build": "9",
+  "app_version": "0.3.6",
+  "backend": {
+    "allowance_changed": false,
+    "credentials_changed": false,
+    "https_health_from_mac": "ok",
+    "reminder_allowance_usd": "2",
+    "runtime_code_changed": false,
+    "service_changed": false,
+    "watch_reachability_proven": false
+  },
+  "client_fix": {
+    "late_results_preserve_suppression": true,
+    "new_intent_requires_explicit_send": true,
+    "old_reminder_rebased": false,
+    "optional_local_suppression": true,
+    "original_payload_identity_and_date_preserved": true,
+    "remote_cancellation_claimed": false,
+    "suppressed_rows_excluded_from_claim_and_batch": true,
+    "suppressed_rows_retained_in_history": true
+  },
+  "client_source_revision": "b7d5f41eb59a30667b9d5c5e89c1b138b15e4ba3",
+  "current_install_metadata_readback_succeeded": false,
+  "device_preflight": {
+    "copy_received": false,
+    "management_discovery_is_readiness_proof": false,
+    "selected_app_query": "timed_out",
+    "selected_outbox_copy": "timed_out"
+  },
+  "devices_updated": false,
+  "historical_install_verified_date": "2026-11-01",
+  "historical_installed_version": "0.3.5 (8)",
+  "human_report": {
+    "attempts": 4,
+    "latest_error_code": "network_-1003",
+    "original_request_identity_reconciled": false,
+    "prior_attempt_outcomes_known": false
+  },
+  "live_effects": {
+    "capture_created": false,
+    "historical_tests_replayed": false,
+    "model_call_submitted": false,
+    "settings_changed": false,
+    "task_created": false,
+    "uninstall_reset_unpair_performed": false
+  },
+  "merge_authorized": false,
+  "physical_acceptance_passed": false,
+  "probe": {
+    "accepted_response_max_bytes": 4096,
+    "capture_post": false,
+    "hmac_or_secret_sent": false,
+    "method": "GET",
+    "outbox_changed": false,
+    "path": "/health",
+    "redirects_allowed": false,
+    "request_timeout_seconds": 8,
+    "resource_timeout_seconds": 10,
+    "system_tls_validation_preserved": true
+  },
+  "pull_request": 7,
+  "remaining": [
+    "readable device backups and metadata",
+    "matching old capture read-only reconciliation",
+    "in-place update and preserved-state readback",
+    "actual Watch connection diagnostic",
+    "user-initiated capture and physical notification acceptance"
+  ],
+  "source_manifest_sha256": "c5cf7b676cd3d447c3328a6e7e152cf568c34f279fb217d5c5b620a205ee6c53",
+  "verification": {
+    "existing_signing_team_and_app_identifiers_match": true,
+    "focused_backend_recovery": {
+      "failures": 0,
+      "providers": "fake",
+      "tests": 7
+    },
+    "full_ui_suite": {
+      "duration_seconds": 356.476,
+      "failures": 0,
+      "skipped": 0,
+      "tests": 16
+    },
+    "independent_focused": {
+      "failures": 0,
+      "tests": 15
+    },
+    "independent_review": "passed",
+    "new_ui_cases": {
+      "failures": 0,
+      "tests": 6
+    },
+    "shared_swift_suite": {
+      "failures": 0,
+      "tests": 87
+    },
+    "signed_phone_and_embedded_watch_build": "passed",
+    "strict_signature_verification": "passed",
+    "valid_cached_profiles": true
+  },
+  "version": 1
+}

@@ -1,5 +1,8 @@
 import Foundation
 import PersonalWatchCore
+#if DEBUG && targetEnvironment(simulator)
+import CryptoKit
+#endif
 
 /// Shared app storage and transport. Synthetic UI support is compiled only for
 /// Debug simulator builds and never writes app configuration or Keychain.
@@ -15,9 +18,7 @@ enum PersonalWatchAppRuntime {
     static var outboxURL: URL {
         #if DEBUG && targetEnvironment(simulator)
         if let caseID = syntheticCaseID {
-            return FileManager.default.temporaryDirectory
-                .appendingPathComponent("PersonalWatchSyntheticUI", isDirectory: true)
-                .appendingPathComponent(caseID, isDirectory: true)
+            return syntheticDirectory(caseID: caseID)
                 .appendingPathComponent("outbox.json", isDirectory: false)
         }
         #endif
@@ -44,22 +45,143 @@ enum PersonalWatchAppRuntime {
     static func makeClient(baseURL: URL) -> WebhookClient {
         #if DEBUG && targetEnvironment(simulator)
         if syntheticCaseID != nil {
-            let configuration = URLSessionConfiguration.ephemeral
-            // This protocol claims every request made by this session. Even a
-            // malformed fixture URL fails locally instead of reaching a network.
-            configuration.protocolClasses = [PersonalWatchSyntheticUIURLProtocol.self]
-            configuration.urlCache = nil
-            configuration.urlCredentialStorage = nil
-            configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
             return WebhookClient(endpoint: EndpointValidator.captureURL(from: baseURL),
-                                 session: URLSession(configuration: configuration))
+                                 session: PersonalWatchSyntheticSession())
         }
         #endif
         return WebhookClient(endpoint: EndpointValidator.captureURL(from: baseURL))
     }
 
+    /// Connection diagnostics never enqueue or sign a capture.
+    static func checkServerConnection(baseURL: URL) async -> ServerConnectionCheckResult {
+        #if DEBUG && targetEnvironment(simulator)
+        if syntheticCaseID != nil {
+            return await ServerConnectionCheck.check(baseURL: baseURL, session: PersonalWatchSyntheticSession())
+        }
+        #endif
+        return await ServerConnectionCheck.check(baseURL: baseURL)
+    }
+
+    static func prepareSyntheticStateIfNeeded() async {
+        #if DEBUG && targetEnvironment(simulator)
+        guard let caseID = syntheticCaseID,
+              ["reminder_old_sending", "reminder_old_dns", "expense_refreshed_confirmation_sending", "expense_cancellation_sending"].contains(syntheticScenario)
+        else { return }
+        let url = outboxURL
+        guard !FileManager.default.fileExists(atPath: url.path) else { return }
+        let capturedAt = "2026-11-01T00:00:00Z"
+        let store = FileOutboxStore(fileURL: url)
+        do {
+            if syntheticScenario == "expense_refreshed_confirmation_sending" {
+                try await seedRefreshedExpenseConfirmation(in: store, caseID: caseID, capturedAt: capturedAt)
+            } else if syntheticScenario == "expense_cancellation_sending" {
+                try await seedSendingExpenseCancellation(in: store, caseID: caseID, capturedAt: capturedAt)
+            } else {
+                let payload = syntheticFactory(id: "synthetic-old-reminder-" + caseID, capturedAt: capturedAt)
+                    .makePayload(kind: .reminder, text: "Recordatorio anterior sintético", requestWrite: true)
+                _ = try await store.enqueue(payload, now: capturedAt)
+                if syntheticScenario == "reminder_old_dns" {
+                    for _ in 0..<4 {
+                        _ = try await store.claimDelivery(payload: payload, now: capturedAt)
+                        try await store.markFailed(requestID: payload.requestID, message: "network_-1003", now: capturedAt)
+                    }
+                } else {
+                    _ = try await store.claimDelivery(payload: payload, now: capturedAt)
+                }
+            }
+        } catch {
+            // Fixtures remain fail-closed and never alter configuration or credentials.
+        }
+        #endif
+    }
+
     #if DEBUG && targetEnvironment(simulator)
-    private static var syntheticCaseID: String? {
+    private static func syntheticFactory(id: String, capturedAt: String) -> CaptureFactory {
+        CaptureFactory(appVersion: "synthetic-ui", platform: "simulator", osVersion: "synthetic",
+                       deviceID: "synthetic-ui-device", surface: "synthetic-ui",
+                       nowISO8601: { capturedAt }, makeRequestID: { id })
+    }
+
+    private static func seedRefreshedExpenseConfirmation(in store: FileOutboxStore, caseID: String, capturedAt: String) async throws {
+        let operationID = "exp_" + String(repeating: "8", count: 32)
+        let summary = ExpenseConfirmationSummary(amountCOP: 45000, description: "Uber", sourceName: "Efectivo",
+                                                 categoryName: "Transporte", budgetName: "Movilidad")
+        let text = "45 mil Uber Efectivo"
+        let initialToken = "synthetic-ui-confirmation-token-old"
+        let refreshedToken = "synthetic-ui-confirmation-token"
+        let preview = syntheticFactory(id: "synthetic-expense-preview-" + caseID, capturedAt: capturedAt)
+            .makePayload(kind: .expense, text: text, requestWrite: true)
+        _ = try await store.enqueue(preview, now: capturedAt)
+        _ = try await store.claimDelivery(payload: preview, now: capturedAt)
+        try await store.markSent(requestID: preview.requestID, now: capturedAt,
+                                 response: CaptureResponseV1(status: "needs_confirmation", dryRun: false,
+                                    requestID: preview.requestID, domain: preview.route.domain.rawValue,
+                                    operationID: operationID, confirmationToken: initialToken, confirmation: summary,
+                                    writeCommitted: false, plan: .init(sideEffects: [], wouldWrite: false)))
+        let old = syntheticFactory(id: "synthetic-expense-confirm-old-" + caseID, capturedAt: capturedAt)
+            .makePayload(kind: .expense, text: text, requestWrite: true, userConfirmation: true,
+                         confirmationToken: initialToken, operationID: operationID)
+        _ = try await store.enqueue(old, now: capturedAt)
+        _ = try await store.claimDelivery(payload: old, now: capturedAt)
+        // A correlated server preview refresh is not a committed withdrawal.
+        try await store.markSent(requestID: old.requestID, now: capturedAt,
+                                 response: CaptureResponseV1(status: "needs_confirmation", dryRun: false,
+                                    requestID: old.requestID, domain: old.route.domain.rawValue,
+                                    operationID: operationID, confirmationToken: refreshedToken, confirmation: summary,
+                                    displayMessage: "Revisa $45.000 COP · Uber · Efectivo · Transporte · Movilidad",
+                                    writeCommitted: false, plan: .init(sideEffects: [], wouldWrite: false)))
+        let current = syntheticFactory(id: "synthetic-expense-confirm-current-" + caseID, capturedAt: capturedAt)
+            .makePayload(kind: .expense, text: text, requestWrite: true, userConfirmation: true,
+                         confirmationToken: refreshedToken, operationID: operationID)
+        _ = try await store.enqueue(current, now: capturedAt)
+        _ = try await store.claimDelivery(payload: current, now: capturedAt)
+    }
+
+    private static func seedSendingExpenseCancellation(in store: FileOutboxStore, caseID: String, capturedAt: String) async throws {
+        let operationID = "exp_" + String(repeating: "8", count: 32)
+        let token = "synthetic-ui-confirmation-token"
+        let text = "45 mil Uber Efectivo"
+        let preview = syntheticFactory(id: "synthetic-expense-preview-" + caseID, capturedAt: capturedAt)
+            .makePayload(kind: .expense, text: text, requestWrite: true)
+        _ = try await store.enqueue(preview, now: capturedAt)
+        _ = try await store.claimDelivery(payload: preview, now: capturedAt)
+        try await store.markSent(requestID: preview.requestID, now: capturedAt,
+                                 response: CaptureResponseV1(status: "needs_confirmation", dryRun: false,
+                                    requestID: preview.requestID, domain: preview.route.domain.rawValue,
+                                    operationID: operationID, confirmationToken: token,
+                                    confirmation: .init(amountCOP: 45000, description: "Uber", sourceName: "Efectivo",
+                                                        categoryName: "Transporte", budgetName: "Movilidad"),
+                                    writeCommitted: false, plan: .init(sideEffects: [], wouldWrite: false)))
+        let confirmation = syntheticFactory(id: "synthetic-expense-confirm-current-" + caseID, capturedAt: capturedAt)
+            .makePayload(kind: .expense, text: text, requestWrite: true, userConfirmation: true,
+                         confirmationToken: token, operationID: operationID)
+        _ = try await store.enqueue(confirmation, now: capturedAt)
+        _ = try await store.claimDelivery(payload: confirmation, now: capturedAt)
+        let cancellation = syntheticFactory(id: "synthetic-expense-cancel-" + caseID, capturedAt: capturedAt)
+            .makePayload(kind: .expense, text: text, requestWrite: true, userCancellation: true, operationID: operationID)
+        // This legitimate transaction invalidates the preview and records the
+        // prior sending attempt; neither request has a received outcome.
+        _ = try await store.enqueue(cancellation, now: capturedAt)
+        _ = try await store.claimDelivery(payload: cancellation, now: capturedAt)
+    }
+
+    fileprivate static func syntheticDirectory(caseID: String) -> URL {
+        FileManager.default.temporaryDirectory
+            .appendingPathComponent("PersonalWatchSyntheticUI", isDirectory: true)
+            .appendingPathComponent(caseID, isDirectory: true)
+    }
+
+    fileprivate static var syntheticScenario: String {
+        let arguments = ProcessInfo.processInfo.arguments
+        for prefix in ["--personal-watch-ui-scenario=", "--hermes-ui-scenario="] {
+            if let argument = arguments.first(where: { $0.hasPrefix(prefix) }) {
+                return String(argument.dropFirst(prefix.count))
+            }
+        }
+        return "normal"
+    }
+
+    fileprivate static var syntheticCaseID: String? {
         let arguments = ProcessInfo.processInfo.arguments
         // Old fixture arguments remain aliases for existing local verification commands.
         guard arguments.contains("--personal-watch-synthetic-ui") || arguments.contains("--hermes-synthetic-ui") else { return nil }
@@ -76,123 +198,142 @@ enum PersonalWatchAppRuntime {
 }
 
 #if DEBUG && targetEnvironment(simulator)
-/// A local-only protocol for exercising the app UI, not a backend substitute.
+/// An in-memory simulator transport. It has no URLSession or network fallback.
 /// No handler, credential, or launch-argument bypass exists in device/Release builds.
-private final class PersonalWatchSyntheticUIURLProtocol: URLProtocol {
-    override class func canInit(with request: URLRequest) -> Bool { true }
-    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+private final class PersonalWatchSyntheticSession: URLSessioning {
+    func data(for request: URLRequest) async throws -> (Data, URLResponse) {
+        let data: Data?
+        do {
+            data = request.httpBody != nil || request.httpBodyStream != nil ? try Self.requestBody(request) : nil
+        } catch {
+            PersonalWatchSyntheticRequestAudit.append(request: request, body: nil)
+            throw error
+        }
+        PersonalWatchSyntheticRequestAudit.append(request: request, body: data)
+        return try Self.fixtureResponse(for: request, body: data, scenario: PersonalWatchAppRuntime.syntheticScenario)
+    }
 
-    override func startLoading() {
+    private static func fixtureResponse(for request: URLRequest, body data: Data?, scenario: String) throws -> (Data, URLResponse) {
         guard let url = request.url,
               url.scheme == "https", url.host == "personal-watch-ui.invalid",
               url.port == nil, url.user == nil, url.password == nil,
-              url.query == nil, url.fragment == nil,
-              url.path == "/webhooks/mobile-capture-v1", request.httpMethod == "POST" else {
-            fail(URLError(.unsupportedURL))
-            return
+              url.query == nil, url.fragment == nil else {
+            throw URLError(.unsupportedURL)
         }
-        do {
-            let data = try requestBody()
-            let payload = try JSONDecoder.captureDecoder().decode(CapturePayloadV1.self, from: data)
-            guard payload.eventType == CapturePayloadV1.eventType,
-                  payload.schema == CapturePayloadV1.schema,
-                  payload.schemaVersion == CapturePayloadV1.schemaVersion,
-                  !payload.requestID.isEmpty,
-                  !payload.capture.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                  !payload.context.dryRun,
-                  OutboxDeliveryService.isSafeRequest(payload) else {
-                fail(URLError(.badServerResponse))
-                return
+        if url.path == "/health", request.httpMethod == "GET" {
+            guard data == nil,
+                  request.value(forHTTPHeaderField: WebhookHeaders.signatureV2) == nil,
+                  request.value(forHTTPHeaderField: WebhookHeaders.requestID) == nil else {
+                throw URLError(.unsupportedURL)
             }
+            if ["reminder_network_failure", "reminder_old_dns"].contains(scenario) {
+                throw URLError(.cannotFindHost)
+            }
+            if scenario == "health_tls_failure" { throw URLError(.secureConnectionFailed) }
+            if scenario == "health_timeout" { throw URLError(.timedOut) }
+            let domains = scenario == "health_gate_disabled"
+                ? ["aura.grocery_capture"] : ["aura.reminder_capture", "aura.grocery_capture"]
+            return try response(["status": "ok", "service": "mobile-capture-v1-staging",
+                                 "mode": "allowlisted-write", "write_domains": domains],
+                                status: scenario == "health_http_503" ? 503 : 200, url: url)
+        }
+        guard url.path == "/webhooks/mobile-capture-v1", request.httpMethod == "POST" else {
+            throw URLError(.unsupportedURL)
+        }
+        let payload = try JSONDecoder.captureDecoder().decode(CapturePayloadV1.self, from: data ?? Data())
+        guard payload.eventType == CapturePayloadV1.eventType,
+              payload.schema == CapturePayloadV1.schema,
+              payload.schemaVersion == CapturePayloadV1.schemaVersion,
+              !payload.requestID.isEmpty,
+              !payload.capture.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !payload.context.dryRun,
+              OutboxDeliveryService.isSafeRequest(payload) else {
+            throw URLError(.badServerResponse)
+        }
 
-            var body: [String: Any] = [
-                "status": "committed", "dry_run": false, "write_committed": true,
-                "request_id": payload.requestID, "domain": payload.route.domain.rawValue,
-                "duplicate": false, "gates_missing": [],
-                "plan": ["would_write": true, "side_effects": []]
-            ]
-            switch payload.route {
-            case .grocery:
-                if scenario == "grocery_network_failure" {
-                    fail(URLError(.cannotConnectToHost))
-                    return
-                }
-                body["display_message"] = "Mercado actualizado ✅ · leche (faltante)"
-                body["external_ids"] = ["notion_block_id": "synthetic-grocery-block"]
-                body["plan"] = ["would_write": true, "side_effects": ["notion.official_grocery_list.write"]]
-            case .reminder:
-                body["display_message"] = "Recordatorio guardado · lunes 26 oct, 2:00 p. m. Bogotá · avisos pendientes"
-                body["interpreted_due"] = ["start": "2026-10-26T14:00:00-05:00",
-                                            "timezone": "America/Bogota", "display": "lunes 26 oct, 2:00 p. m. Bogotá"]
-                body["calendar_synced"] = false
-                body["calendar_sync_pending"] = true
-                body["external_ids"] = ["notion_page_id": "synthetic-reminder-page"]
-                body["plan"] = ["would_write": true, "side_effects": ["notion.task.write"]]
-            case .expense:
-                if payload.context.userCancellation == true {
-                    body["status"] = "cancelled"
-                    body["write_committed"] = false
-                    body["operation_id"] = payload.context.operationID
-                    body["display_message"] = "Gasto cancelado · no se registró nada"
-                    body["plan"] = ["would_write": false, "side_effects": []]
-                } else if payload.context.userConfirmation {
-                    guard payload.context.confirmationToken == "synthetic-ui-confirmation-token" else {
-                        fail(URLError(.badServerResponse))
-                        return
-                    }
-                    if scenario == "offline_confirmation" {
-                        fail(URLError(.notConnectedToInternet))
-                        return
-                    }
-                    body["operation_id"] = payload.context.operationID
-                    if scenario == "expired" {
-                        body["status"] = "rejected"
-                        body["write_committed"] = false
-                        body["display_message"] = "Vista previa vencida · no se registró el gasto"
-                        body["plan"] = ["would_write": false, "side_effects": []]
-                        try respond(body, status: 410)
-                        return
-                    }
-                    body["display_message"] = "Gasto registrado ✅ · $45.000 COP"
-                    body["plan"] = ["would_write": true, "side_effects": ["firefly.withdrawal.write"]]
-                    body["external_ids"] = ["firefly_journal_id": "synthetic-journal"]
-                } else {
-                    let hexadecimal = payload.requestID.lowercased().filter { "0123456789abcdef".contains($0) }
-                    let operationSuffix = String((hexadecimal + String(repeating: "0", count: 32)).prefix(32))
-                    body["status"] = "needs_confirmation"
-                    body["write_committed"] = false
-                    body["operation_id"] = "exp_" + operationSuffix
-                    body["confirmation_token"] = "synthetic-ui-confirmation-token"
-                    body["confirmation"] = ["amount_cop": 45000, "description": "Uber",
-                                             "source_name": "Efectivo", "category_name": "Transporte",
-                                             "budget_name": "Movilidad"]
-                    body["display_message"] = "Revisa $45.000 COP · Uber · Efectivo · Transporte · Movilidad"
-                    body["plan"] = ["would_write": false, "side_effects": []]
-                }
-            default:
-                fail(URLError(.unsupportedURL))
-                return
+        var body: [String: Any] = [
+            "status": "committed", "dry_run": false, "write_committed": true,
+            "request_id": payload.requestID, "domain": payload.route.domain.rawValue,
+            "duplicate": false, "gates_missing": [],
+            "plan": ["would_write": true, "side_effects": []]
+        ]
+        switch payload.route {
+        case .grocery:
+            if scenario == "grocery_network_failure" { throw URLError(.cannotConnectToHost) }
+            body["display_message"] = "Mercado actualizado ✅ · leche (faltante)"
+            body["external_ids"] = ["notion_block_id": "synthetic-grocery-block"]
+            body["plan"] = ["would_write": true, "side_effects": ["notion.official_grocery_list.write"]]
+        case .reminder:
+            if ["reminder_network_failure", "reminder_old_dns"].contains(scenario) {
+                throw URLError(.cannotFindHost)
             }
-            try respond(body, status: 200)
-        } catch {
-            fail(error)
+            if scenario == "reminder_pending" {
+                return try response(["status": "error", "error": "reminder_pending_retry",
+                                     "request_id": payload.requestID, "domain": payload.route.domain.rawValue], status: 502, url: url)
+            }
+            if scenario == "reminder_expired" {
+                body["status"] = "needs_input"
+                body["write_committed"] = false
+                body["display_message"] = "La hora ya pasó · no creé este recordatorio"
+                body["plan"] = ["would_write": false, "side_effects": []]
+                return try response(body, status: 200, url: url)
+            }
+            body["display_message"] = "Guardado en Todoist · lunes 26 oct, 2:00 p. m. Bogotá · avisos pendientes"
+            body["interpreted_due"] = ["start": "2026-10-26T14:00:00-05:00",
+                                        "timezone": "America/Bogota", "display": "lunes 26 oct, 2:00 p. m. Bogotá"]
+            body["auto_reminder_requested"] = true
+            body["notification_verified"] = false
+            body["delivery_status"] = "pending_verification"
+            body["external_ids"] = ["todoist_task_id": "synthetic-reminder-task"]
+            body["plan"] = ["would_write": true, "side_effects": ["todoist.task.write"]]
+        case .expense:
+            if payload.context.userCancellation == true {
+                if scenario == "offline_cancellation" { throw URLError(.notConnectedToInternet) }
+                body["status"] = "cancelled"
+                body["write_committed"] = false
+                body["operation_id"] = payload.context.operationID
+                body["display_message"] = "Gasto cancelado · no se registró nada"
+                body["plan"] = ["would_write": false, "side_effects": []]
+            } else if payload.context.userConfirmation {
+                guard payload.context.confirmationToken == "synthetic-ui-confirmation-token" else {
+                    throw URLError(.badServerResponse)
+                }
+                if ["offline_confirmation", "offline_cancellation"].contains(scenario) { throw URLError(.notConnectedToInternet) }
+                body["operation_id"] = payload.context.operationID
+                if scenario == "expired" {
+                    body["status"] = "rejected"
+                    body["write_committed"] = false
+                    body["display_message"] = "Vista previa vencida · no se registró el gasto"
+                    body["plan"] = ["would_write": false, "side_effects": []]
+                    return try response(body, status: 410, url: url)
+                }
+                body["display_message"] = "Gasto registrado ✅ · $45.000 COP"
+                body["plan"] = ["would_write": true, "side_effects": ["firefly.withdrawal.write"]]
+                body["external_ids"] = ["firefly_journal_id": "synthetic-journal"]
+            } else {
+                let hexadecimal = payload.requestID.lowercased().filter { "0123456789abcdef".contains($0) }
+                let operationSuffix = String((hexadecimal + String(repeating: "0", count: 32)).prefix(32))
+                body["status"] = "needs_confirmation"
+                body["write_committed"] = false
+                body["operation_id"] = "exp_" + operationSuffix
+                body["confirmation_token"] = "synthetic-ui-confirmation-token"
+                body["confirmation"] = ["amount_cop": 45000, "description": "Uber",
+                                         "source_name": "Efectivo", "category_name": "Transporte",
+                                         "budget_name": "Movilidad"]
+                body["display_message"] = "Revisa $45.000 COP · Uber · Efectivo · Transporte · Movilidad"
+                body["plan"] = ["would_write": false, "side_effects": []]
+            }
+        default:
+            throw URLError(.unsupportedURL)
         }
+        return try response(body, status: 200, url: url)
     }
 
-    override func stopLoading() {}
-
-    private var scenario: String {
-        let arguments = ProcessInfo.processInfo.arguments
-        for prefix in ["--personal-watch-ui-scenario=", "--hermes-ui-scenario="] {
-            if let argument = arguments.first(where: { $0.hasPrefix(prefix) }) {
-                return String(argument.dropFirst(prefix.count))
-            }
+    private static func requestBody(_ request: URLRequest) throws -> Data {
+        if let body = request.httpBody {
+            guard body.count <= 64 * 1024 else { throw URLError(.dataLengthExceedsMaximum) }
+            return body
         }
-        return "normal"
-    }
-
-    private func requestBody() throws -> Data {
-        if let body = request.httpBody, body.count <= 64 * 1024 { return body }
         guard let stream = request.httpBodyStream else { throw URLError(.badServerResponse) }
         stream.open()
         defer { stream.close() }
@@ -207,20 +348,47 @@ private final class PersonalWatchSyntheticUIURLProtocol: URLProtocol {
         return body
     }
 
-    private func respond(_ body: [String: Any], status: Int) throws {
-        guard let url = request.url,
-              let response = HTTPURLResponse(url: url, statusCode: status,
+    private static func response(_ body: [String: Any], status: Int, url: URL) throws -> (Data, URLResponse) {
+        guard let response = HTTPURLResponse(url: url, statusCode: status,
                                              httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "application/json"]) else {
             throw URLError(.badServerResponse)
         }
-        let data = try JSONSerialization.data(withJSONObject: body, options: [.sortedKeys])
-        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-        client?.urlProtocol(self, didLoad: data)
-        client?.urlProtocolDidFinishLoading(self)
+        return (try JSONSerialization.data(withJSONObject: body, options: [.sortedKeys]), response)
     }
+}
 
-    private func fail(_ error: Error) {
-        client?.urlProtocol(self, didFailWithError: error)
+/// Only simulator-generated requests reach this logger. It records neither
+/// request bodies nor authentication headers, and never contacts a network.
+private enum PersonalWatchSyntheticRequestAudit {
+    private static let lock = NSLock()
+
+    static func append(request: URLRequest, body: Data?) {
+        guard let caseID = PersonalWatchAppRuntime.syntheticCaseID else { return }
+        let payload = body.flatMap { try? JSONDecoder.captureDecoder().decode(CapturePayloadV1.self, from: $0) }
+        let entry: [String: Any] = [
+            "method": request.httpMethod ?? "GET",
+            "path": request.url?.path ?? "",
+            "body_sha256": SHA256.hash(data: body ?? Data()).map { String(format: "%02x", $0) }.joined(),
+            "request_id": payload?.requestID as Any? ?? NSNull()
+        ]
+        lock.lock()
+        defer { lock.unlock() }
+        do {
+            let directory = PersonalWatchAppRuntime.syntheticDirectory(caseID: caseID)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let url = directory.appendingPathComponent("transport-audit.jsonl")
+            if !FileManager.default.fileExists(atPath: url.path) {
+                guard FileManager.default.createFile(atPath: url.path, contents: Data()) else { return }
+            }
+            var line = try JSONSerialization.data(withJSONObject: entry, options: [.sortedKeys])
+            line.append(0x0A)
+            let handle = try FileHandle(forWritingTo: url)
+            defer { try? handle.close() }
+            try handle.seekToEnd()
+            try handle.write(contentsOf: line)
+        } catch {
+            // Failed diagnostics must not trigger a fallback transport or alter the outbox.
+        }
     }
 }
 #endif

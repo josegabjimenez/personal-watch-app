@@ -34,7 +34,8 @@ from typing import Any, Callable
 from urllib import error, parse, request
 
 REGISTER_URL = "https://api.todoist.com/oauth/register"
-AUTHORIZE_URL = "https://app.todoist.com/oauth/authorize"
+# Advertised by https://api.todoist.com/.well-known/oauth-authorization-server.
+AUTHORIZE_URL = "https://api.todoist.com/oauth/authorize"
 TOKEN_URL = "https://api.todoist.com/oauth/access_token"
 SCOPES = frozenset({"task:add", "data:read"})
 CALLBACK_PATH = "/todoist/oauth/callback"

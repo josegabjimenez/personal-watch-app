@@ -26,6 +26,7 @@ import time
 from types import SimpleNamespace
 import unittest
 from unittest import mock
+from zoneinfo import ZoneInfo
 
 
 def load_fixture():
@@ -67,13 +68,15 @@ class SyntheticTodoist:
         self.test = test
         self.calls = []
         self.commands = []
+        self.rest_requests = []
         self.tasks = {}
         self.command_ids = {}
         self.lose_ack = False
         self.fail_before_sync = False
         self.bad_readback = False
 
-    def request(self, gateway, method, path, deadline, *, form=None):
+    def request(self, gateway, method, path, deadline, *, form=None, json_body=None,
+                request_id=None, on_before_send=None, retry_unauthorized=True):
         self.calls.append((method, path))
         if method == "GET" and path == "/user":
             return {"id": IDENTITY["user_id"], "inbox_project_id": IDENTITY["inbox_project_id"], "tz_info": {"timezone": IDENTITY["timezone"]}}
@@ -88,6 +91,35 @@ class SyntheticTodoist:
             if self.bad_readback:
                 result["content"] = "Different synthetic action"
             return result
+        if method == "POST" and path == "/tasks":
+            self.test.assertIsNone(form)
+            self.test.assertFalse(retry_unauthorized)
+            self.test.assertTrue(callable(on_before_send))
+            on_before_send()
+            operation = self.test.operation()
+            self.test.assertEqual((operation["transport"], operation["rest_dispatched"], operation["status"]), ("rest_v1", 1, "reconciliation_required"))
+            self.test.assertEqual(operation["command_uuid"], request_id)
+            frozen = json.loads(operation["plan_json"])
+            self.test.assertEqual(frozen["title"], json_body["content"])
+            self.test.assertEqual(frozen["labels"], json_body["labels"])
+            self.test.assertIs(json_body["auto_reminder"], True)
+            self.test.assertIs(json_body["auto_parse_labels"], False)
+            self.rest_requests.append({"request_id": request_id, "body": copy.deepcopy(json_body)})
+            identifier = "synthetic-task-" + str(len(self.tasks) + 1)
+            # Match the documented REST conversion from UTC input to the
+            # authenticated user's default timezone on task readback.
+            local_due = datetime.fromisoformat(json_body["due_datetime"].replace("Z", "+00:00")).astimezone(ZoneInfo(IDENTITY["timezone"]))
+            self.tasks[identifier] = {
+                "id": identifier, "user_id": IDENTITY["user_id"], "project_id": json_body["project_id"],
+                "content": json_body["content"], "description": json_body["description"],
+                "due": {"date": local_due.isoformat(), "timezone": IDENTITY["timezone"], "is_recurring": False},
+                "labels": list(json_body["labels"]), "priority": json_body["priority"],
+                "parent_id": None, "section_id": None, "is_deleted": False, "checked": False, "deadline": None,
+            }
+            if self.lose_ack:
+                self.lose_ack = False
+                raise self.test.todoist.RetryableTodoistError("synthetic provider lost acknowledgement")
+            return copy.deepcopy(self.tasks[identifier])
         if method == "POST" and path == "/sync":
             commands = json.loads(form["commands"])
             self.test.assertEqual(len(commands), 1)
@@ -259,6 +291,14 @@ class ExactHistoricalReminderRuntimeTests(unittest.TestCase):
         conn.close()
         return dict(row) if row else None
 
+    def seed_legacy(self):
+        self.reminders.init_db(self.cfg.ledger_path)
+        with sqlite3.connect(self.cfg.ledger_path) as conn:
+            conn.execute("""INSERT INTO reminder_operation_ledger
+                (request_id,payload_hash,status,command_uuid,temp_id,updated_at)
+                VALUES (?,?,'unbound',?,?,?)""", (payload()["request_id"], build.digest(self.raw(payload())),
+                    "96e26ce3-5cd1-4b7b-a393-2f64abac5bdf", "c055f623-d8b0-44cf-b47a-856684b1293c", NOW.isoformat()))
+
     def test_generated_package_is_exact_and_every_local_import_comes_from_release(self):
         self.assertEqual(len(build.ARTIFACTS), 12)
         build.verify_release(self.release, self.expected)
@@ -283,7 +323,7 @@ class ExactHistoricalReminderRuntimeTests(unittest.TestCase):
         operation = self.operation()
         frozen = json.loads(operation["plan_json"])
         self.assertEqual(frozen["labels"], ["5_min", "On_Phone"])
-        self.assertEqual(operation["command_uuid"], self.provider.commands[0]["uuid"])
+        self.assertEqual(operation["command_uuid"], self.provider.rest_requests[0]["request_id"])
         self.assertEqual(self.parent()["payload_hash"], build.digest(self.raw(payload())))
         before_calls = len(self.provider.calls)
         code, replay = self.invoke()
@@ -291,7 +331,8 @@ class ExactHistoricalReminderRuntimeTests(unittest.TestCase):
         self.assertEqual(replay["interpreted_due"], frozen["due"])
         self.assertEqual(self.operation()["command_uuid"], operation["command_uuid"])
         self.assertEqual(self.model.call_count, 1)
-        self.assertEqual(len(self.provider.commands), 1)
+        self.assertEqual(len(self.provider.rest_requests), 1)
+        self.assertEqual(self.provider.commands, [])
         self.assertEqual(len(self.provider.calls), before_calls)
 
     def test_raw_hash_conflict_409_never_replans_or_mutates(self):
@@ -346,13 +387,14 @@ class ExactHistoricalReminderRuntimeTests(unittest.TestCase):
         self.assertEqual(self.parent()["created_at"], original["created_at"])
         self.assertEqual(self.model.call_count, 1)
 
-    def test_lost_ack_reconciles_frozen_relative_plan_without_new_sync_or_model(self):
+    def test_lost_ack_reconciles_frozen_relative_plan_without_new_rest_or_model(self):
         self.provider.lose_ack = True
         code, response = self.invoke()
         self.assertEqual(code, 502)
         self.assertEqual(response, {"status": "error", "error": "reminder_pending_retry", "request_id": payload()["request_id"], "domain": "aura.reminder_capture"})
         original = self.operation()
-        self.assertEqual(original["status"], "uncertain")
+        self.assertEqual(original["status"], "reconciliation_required")
+        self.assertEqual(original["rest_dispatched"], 1)
         frozen = json.loads(original["plan_json"])
         self.current = datetime.fromisoformat("2026-11-05T12:10:00-05:00")
         code, response = self.invoke()
@@ -360,10 +402,12 @@ class ExactHistoricalReminderRuntimeTests(unittest.TestCase):
         self.assertEqual(response["interpreted_due"], frozen["due"])
         self.assertEqual(self.operation()["command_uuid"], original["command_uuid"])
         self.assertEqual(self.model.call_count, 1)
-        self.assertEqual(len(self.provider.commands), 1)
+        self.assertEqual(len(self.provider.rest_requests), 1)
+        self.assertEqual(self.provider.commands, [])
         self.assertEqual(len(self.provider.tasks), 1)
 
     def test_uncertain_pre_save_retry_reuses_identical_sync_uuid_temp_and_plan(self):
+        self.seed_legacy()
         self.provider.fail_before_sync = True
         self.assertEqual(self.invoke()[0], 502)
         self.provider.fail_before_sync = False
@@ -378,8 +422,9 @@ class ExactHistoricalReminderRuntimeTests(unittest.TestCase):
         code, response = self.invoke()
         self.assertEqual((code, response["error"]), (502, "reminder_pending_retry"))
         self.assertNotIn("write_committed", response)
-        self.assertEqual(self.operation()["status"], "uncertain")
-        self.assertEqual(len(self.provider.commands), 1)
+        self.assertEqual(self.operation()["status"], "reconciliation_required")
+        self.assertEqual(self.operation()["rest_dispatched"], 1)
+        self.assertEqual(len(self.provider.rest_requests), 1)
         self.assertEqual(self.operation()["task_id"], "synthetic-task-1")
 
     def test_slow_model_holds_neither_global_grocery_execution_lock_nor_sql_transaction(self):
