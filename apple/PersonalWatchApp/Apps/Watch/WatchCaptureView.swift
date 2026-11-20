@@ -21,7 +21,7 @@ struct WatchCaptureView: View {
     @State private var queuedIsSending = false
     @State private var durableCancellationMessage: String?
     @State private var pendingExpenseConfirmation: PendingExpenseConfirmation?
-    @State private var showsReminderRetention = false
+    @State private var showsCaptureRetention = false
     @State private var isCheckingConnection = false
     @State private var connectionMessage: String?
     @State private var connectionDiagnostic: String?
@@ -105,19 +105,22 @@ struct WatchCaptureView: View {
                     }
                 }
 
-                if action == .reminder {
-                    if queuedPayload != nil {
-                        Button("Nuevo recordatorio") {
-                            showsReminderRetention = true
-                        }
-                        .buttonStyle(.bordered)
-                        .disabled(isSaving)
-                        .accessibilityIdentifier("capture.newReminder")
+                if (action == .reminder || action == .expense),
+                   queuedPayload != nil, pendingExpenseConfirmation == nil {
+                    Button(action == .expense ? "Nuevo gasto" : "Nuevo recordatorio") {
+                        showsCaptureRetention = true
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(isSaving)
+                    .accessibilityIdentifier(action == .expense ? "capture.newExpense" : "capture.newReminder")
+                    if action == .reminder {
                         Text("Conserva el anterior en Historial antes de escribir una intención distinta.")
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                     }
+                }
 
+                if action == .reminder {
                     Button {
                         Task { @MainActor in await checkConnection() }
                     } label: {
@@ -155,14 +158,16 @@ struct WatchCaptureView: View {
             .padding(.horizontal, 4)
         }
         .navigationTitle(action.title)
-        .confirmationDialog("Conservar el recordatorio anterior", isPresented: $showsReminderRetention, titleVisibility: .visible) {
+        .confirmationDialog(action == .expense ? "Conservar el gasto anterior" : "Conservar el recordatorio anterior", isPresented: $showsCaptureRetention, titleVisibility: .visible) {
             Button("Conservar y abrir nuevo") {
-                Task { @MainActor in await retainReminderAndOpenDraft() }
+                Task { @MainActor in await retainCaptureAndOpenDraft() }
             }
-            .accessibilityIdentifier("capture.retainReminder.confirm")
+            .accessibilityIdentifier(action == .expense ? "capture.retainExpense.confirm" : "capture.retainReminder.confirm")
             Button("Volver", role: .cancel) {}
         } message: {
-            Text("Conserva su texto, fecha e identificador y detiene los reintentos de este dispositivo. No cancela un posible registro en Todoist. El nuevo borrador es para una intención distinta.")
+            Text(action == .expense
+                ? "Guarda el gasto en Historial y detiene sus reintentos. Si lo enviaste, el resultado puede seguir por verificar. Usa el borrador nuevo para un gasto distinto."
+                : "Conserva su texto, fecha e identificador y detiene los reintentos de este dispositivo. No cancela un posible registro en Todoist. El nuevo borrador es para una intención distinta.")
         }
         .onAppear {
             ensureDeviceIdentity()
@@ -192,16 +197,16 @@ struct WatchCaptureView: View {
     }
 
     @MainActor
-    private func retainReminderAndOpenDraft() async {
-        guard action == .reminder, !isSaving, let original = queuedPayload else { return }
+    private func retainCaptureAndOpenDraft() async {
+        guard action == .reminder || action == .expense, !isSaving, let original = queuedPayload else { return }
         isSaving = true
         defer { isSaving = false }
         let store = FileOutboxStore(fileURL: outboxURL)
         do {
-            _ = try await store.retainReminderForReview(
-                requestID: original.requestID, now: ISO8601DateFormatter().string(from: Date())
+            _ = try await store.retainInitialCaptureForReview(
+                requestID: original.requestID, route: action.route, now: ISO8601DateFormatter().string(from: Date())
             )
-            openDistinctReminderDraft()
+            openDistinctDraft()
         } catch {
             // A late, safely correlated receipt can win the retention race.
             // Storage failure or an uncertain result never clears this editor.
@@ -209,19 +214,29 @@ struct WatchCaptureView: View {
                item.payload == original, item.status == .sent,
                let response = item.lastResponse,
                OutboxDeliveryService.isSafe(response: response, for: original) {
-                openDistinctReminderDraft()
+                if action == .expense, response.status == "needs_confirmation" {
+                    statusMessage = "Llegó una vista previa · vuelve a abrir Gasto para revisarla"
+                    return
+                }
+                openDistinctDraft()
             } else {
-                statusMessage = "No pude conservar el recordatorio · el texto y su estado siguen aquí"
+                statusMessage = "No pude conservar el anterior · el texto y su estado siguen aquí"
             }
         }
     }
 
+    private var retainedDraftMessage: String {
+        action == .expense
+            ? "Anterior conservado en Historial · escribe un gasto distinto"
+            : "Anterior conservado en Historial · escribe un recordatorio distinto"
+    }
+
     @MainActor
-    private func openDistinctReminderDraft() {
+    private func openDistinctDraft() {
         queuedPayload = nil
         queuedIsSending = false
         text = ""
-        statusMessage = "Anterior conservado en Historial · escribe un recordatorio distinto"
+        statusMessage = retainedDraftMessage
     }
 
     @MainActor
@@ -499,8 +514,8 @@ struct WatchCaptureView: View {
                            && $0.lastResponse?.status != "needs_confirmation"
                    }), let message = OutboxPresentation.message(for: latest) {
                     statusMessage = message
-                } else if action == .reminder, items.contains(where: { $0.payload.route == .reminder && $0.isRetrySuppressed }) {
-                    statusMessage = "Anterior conservado en Historial · escribe un recordatorio distinto"
+                } else if items.contains(where: { $0.payload.route == action.route && $0.isRetrySuppressed }) {
+                    statusMessage = retainedDraftMessage
                 }
                 return
             }

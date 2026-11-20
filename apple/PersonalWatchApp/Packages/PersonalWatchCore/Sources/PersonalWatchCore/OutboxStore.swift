@@ -35,7 +35,14 @@ public struct OutboxItem: Codable, Equatable, Identifiable, Sendable {
     public var updatedAt: String
 
     public var isRetrySuppressed: Bool {
-        payload.route == .reminder && retrySuppressedAt != nil
+        retrySuppressedAt != nil && canRetainForReview
+    }
+
+    fileprivate var canRetainForReview: Bool {
+        (payload.route == .reminder || payload.route == .expense)
+            && !payload.context.userConfirmation
+            && payload.context.userCancellation != true
+            && OutboxDeliveryService.isSafeRequest(payload)
     }
 
     public init(
@@ -169,12 +176,17 @@ public actor FileOutboxStore {
                     if let existing = attempts.last(where: {
                         $0.payload.context.confirmationToken == payload.context.confirmationToken
                     }) { return existing }
-                    if !attempts.isEmpty {
-                        // A new token grants no authority unless it is exactly the
-                        // latest active server preview. Never scan older refreshes.
+                    let hasRetainedPreview = items.contains {
+                        $0.isRetrySuppressed && $0.lastResponse?.status == "needs_confirmation"
+                            && $0.lastResponse?.operationID == operationID
+                    }
+                    if !attempts.isEmpty || hasRetainedPreview {
+                        // The server can reuse an operation for another initial
+                        // request. Only its latest active preview can authorize
+                        // a new confirmation; History never grants authority.
                         let activePreview = items.last(where: {
                             $0.payload.route == .expense && $0.status == .sent
-                                && $0.confirmationInvalidatedAt == nil
+                                && !$0.isRetrySuppressed && $0.confirmationInvalidatedAt == nil
                                 && $0.lastResponse?.status == "needs_confirmation"
                                 && $0.lastResponse?.operationID == operationID
                         })
@@ -255,21 +267,22 @@ public actor FileOutboxStore {
         }
     }
 
-    /// Preserve a selected reminder for review without claiming cancellation,
-    /// task absence, or success. An already-running request may still finish;
-    /// its late result must keep this local retry suppression metadata.
     @discardableResult
     public func retainReminderForReview(requestID: String, now: String) throws -> OutboxItem {
+        try retainInitialCaptureForReview(requestID: requestID, route: .reminder, now: now)
+    }
+
+    /// Preserve the initial request and its delivery state. A request already in
+    /// flight can still finish, but its preview must remain inactive.
+    @discardableResult
+    public func retainInitialCaptureForReview(requestID: String, route: CaptureRoute, now: String) throws -> OutboxItem {
         try withExclusiveFileLock {
             var items = try loadAllUnlocked()
             guard let index = items.firstIndex(where: { $0.id == requestID }) else {
                 throw OutboxStoreError.notEnqueued
             }
             let item = items[index]
-            guard item.payload.route == .reminder,
-                  OutboxDeliveryService.isSafeRequest(item.payload),
-                  !item.payload.context.userConfirmation,
-                  item.payload.context.userCancellation != true else {
+            guard item.payload.route == route, item.canRetainForReview else {
                 throw OutboxStoreError.notDeliverable
             }
             if item.isRetrySuppressed { return item }
@@ -326,15 +339,20 @@ public actor FileOutboxStore {
             items[index].lastDeliveryPath = deliveryPath
             items[index].lastResponse = response
             items[index].updatedAt = now
-            if let response, response.status == "needs_confirmation", let operationID = response.operationID,
-               isCancelled(operationID, in: items) || terminalExpenseOperationIDs(in: items).contains(operationID) {
-                items[index].confirmationInvalidatedAt = now
-                items[index].confirmationInvalidationReason = "operation_terminal"
+            if let response, response.status == "needs_confirmation", let operationID = response.operationID {
+                if items[index].isRetrySuppressed {
+                    items[index].confirmationInvalidatedAt = now
+                    items[index].confirmationInvalidationReason = "retained_for_review"
+                } else if isCancelled(operationID, in: items) || terminalExpenseOperationIDs(in: items).contains(operationID) {
+                    items[index].confirmationInvalidatedAt = now
+                    items[index].confirmationInvalidationReason = "operation_terminal"
+                }
             }
 
             if
                 let response,
                 let operationID = response.operationID,
+                !(response.status == "needs_confirmation" && items[index].isRetrySuppressed),
                 shouldConsumePriorExpenseConfirmation(
                     response: response,
                     payload: items[index].payload
@@ -370,6 +388,7 @@ public actor FileOutboxStore {
             .filter { item in
                 guard
                     item.status == .sent,
+                    !item.isRetrySuppressed,
                     item.confirmationInvalidatedAt == nil,
                     item.payload.route.domain == .meganExpenseCapture,
                     let response = item.lastResponse,

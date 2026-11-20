@@ -103,6 +103,7 @@ REMINDER_DIRECT_CROSS_DOMAIN_RE = re.compile(
     re.I,
 )
 LEDGER_WAITING_FOR_SERVER_GATE = "waiting_for_server_gate"
+LEDGER_EXPENSE_PENDING = "expense_pending"
 SUPPORTED_WRITE_ROUTES = {
     ("aura", "grocery", "aura.grocery_capture"): GROCERY_HELPER_WRITE_INTENTS,
     ("aura", "reminder", "aura.reminder_capture"): REMINDER_HELPER_WRITE_INTENTS,
@@ -1222,6 +1223,7 @@ def expense_pending_review_response(planned: dict[str, Any], operation_id: str, 
     )
     response["operation_id"] = operation_id
     response["display_message"] = "Gasto pendiente de revisión · no reintentaré la escritura"
+    response["expense_reconciliation_pending"] = True
     return response
 
 
@@ -1261,11 +1263,17 @@ def reconcile_expense_operation(
     if result.get("decision") == "absent" and result.get("post_attempted") is False:
         return "absent", None
     if result.get("decision") == "reconciliation_error" and result.get("post_attempted") is False:
-        return "unavailable", reject_live_expense_without_write(
+        if operation["status"] != "preview":
+            return "unavailable", expense_pending_review_response(
+                planned, str(operation["operation_id"]), "readback_unavailable",
+            )
+        response = reject_live_expense_without_write(
             planned,
             "No pude verificar Firefly; intenta nuevamente.",
             "Read-only external-id reconciliation was unavailable; no POST was attempted.",
         )
+        response["expense_reconciliation_pending"] = True
+        return "unavailable", response
     mark_expense_operation_uncertain_if_uncommitted(cfg, str(operation["operation_id"]))
     return "uncertain", expense_pending_review_response(
         planned,
@@ -1694,7 +1702,9 @@ def execute_reminder_capture(
 
 
 def ledger_status_for_response(payload: dict[str, Any], response: dict[str, Any]) -> str:
-    """Reserve request/hash identity while allowing a server-gate retry."""
+    """Reserve request/hash identity while waiting for a gate or reconciliation."""
+    if response.get("expense_reconciliation_pending") is True:
+        return LEDGER_EXPENSE_PENDING
     plan = response.get("plan") or {}
     live_request_waiting_for_server = (
         client_requests_write(payload)
@@ -1849,7 +1859,13 @@ class MobileCaptureHandler(BaseHTTPRequestHandler):
                             pending = grocery_capture.preserve_pending_progress(pending, old_response)
                             json_response(self, HTTPStatus.SERVICE_UNAVAILABLE, pending)
                             return
-                        if old_status not in {LEDGER_WAITING_FOR_SERVER_GATE, "processing", "grocery_pending"}:
+                        if old_status == LEDGER_EXPENSE_PENDING and not (
+                            write_is_authorized(payload, self.cfg) or valid_expense_cancellation_request(payload)
+                        ):
+                            conn.rollback()
+                            json_response(self, HTTPStatus.SERVICE_UNAVAILABLE, json.loads(old_response))
+                            return
+                        if old_status not in {LEDGER_WAITING_FOR_SERVER_GATE, LEDGER_EXPENSE_PENDING, "processing", "grocery_pending"}:
                             cached = json.loads(old_response)
                             cached = correct_legacy_grocery_clarification(payload, cached, old_status)
                             cached = current_cached_expense_preview(conn, cached)
@@ -1920,28 +1936,30 @@ class MobileCaptureHandler(BaseHTTPRequestHandler):
             json_response(self, HTTPStatus.SERVICE_UNAVAILABLE, pending)
             return
         except WriteExecutionError as error:
-            # A processing request may safely be retried: expense
-            # operation ledgers are authoritative across uncertain
-            # outcomes and prevent a second POST. Other adapters retain their
-            # existing request-id idempotency contracts.
+            response = {
+                "status": "error",
+                "error": ("reminder_configuration_pending" if str(error) == "reminder_configuration_pending" else "reminder_pending_retry") if reminder_route else "write_adapter_failed",
+                "request_id": request_id,
+                "domain": domain,
+            }
             with sqlite3.connect(self.cfg.ledger_path, timeout=65.0) as conn:
-                conn.execute(
-                    "DELETE FROM mobile_capture_ledger WHERE request_id = ? AND payload_hash = ? AND status = 'processing' AND domain NOT IN ('aura.reminder_capture','aura.grocery_capture')",
-                    (request_id, payload_hash),
-                )
+                if domain == "megan.expense_capture":
+                    # Retain the original hash and retryability even if the
+                    # expense gate is disabled between delivery attempts.
+                    conn.execute(
+                        "UPDATE mobile_capture_ledger SET status=?, response_json=?, updated_at=? WHERE request_id=? AND payload_hash=? AND status='processing'",
+                        (LEDGER_EXPENSE_PENDING, json.dumps(response), now_iso(), request_id, payload_hash),
+                    )
+                else:
+                    conn.execute(
+                        "DELETE FROM mobile_capture_ledger WHERE request_id = ? AND payload_hash = ? AND status = 'processing' AND domain NOT IN ('aura.reminder_capture','aura.grocery_capture')",
+                        (request_id, payload_hash),
+                    )
                 conn.commit()
-            json_response(
-                self,
-                HTTPStatus.BAD_GATEWAY,
-                {
-                    "status": "error",
-                    "error": ("reminder_configuration_pending" if str(error) == "reminder_configuration_pending" else "reminder_pending_retry") if reminder_route else "write_adapter_failed",
-                    "request_id": request_id,
-                    "domain": domain,
-                },
-            )
+            json_response(self, HTTPStatus.BAD_GATEWAY, response)
             return
-        json_response(self, HTTPStatus.OK, response)
+        status = HTTPStatus.SERVICE_UNAVAILABLE if ledger_status == LEDGER_EXPENSE_PENDING else HTTPStatus.OK
+        json_response(self, status, response)
 
 
 def run_server(cfg: Config) -> None:

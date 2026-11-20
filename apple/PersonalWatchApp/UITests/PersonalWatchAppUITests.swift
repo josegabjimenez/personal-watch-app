@@ -206,6 +206,42 @@ final class PersonalWatchAppUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Intentos: 1"].exists)
     }
 
+    func testUnsafeInitialExpenseRetainsHistoryAndAllowsNewDraft() {
+        launch(scenario: "expense_unsafe_preview")
+        enterCapture("expense", text: "45 mil en taxi")
+        app.buttons["capture.send"].tap()
+        assertStatusContains("Respuesta no segura")
+        XCTAssertFalse(app.textFields["capture.text"].isEnabled)
+        XCTAssertFalse(app.buttons["expense.confirm"].exists)
+        let newExpense = app.buttons["capture.newExpense"]
+        reveal(newExpense)
+        newExpense.tap()
+        let retain = app.buttons["capture.retainExpense.confirm"].firstMatch
+        XCTAssertTrue(retain.waitForExistence(timeout: 5))
+        retain.tap()
+        assertStatusContains("Anterior conservado en Historial")
+
+        relaunchAndOpenExpense()
+        assertStatusContains("Anterior conservado en Historial")
+        XCTAssertTrue(app.textFields["capture.text"].isEnabled)
+        XCTAssertFalse(app.buttons["capture.send"].isEnabled)
+        XCTAssertFalse(app.buttons["expense.confirm"].exists)
+        XCTAssertFalse(app.buttons["capture.newExpense"].exists)
+
+        let original = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "history.retainedExpense.")).firstMatch
+        reveal(original)
+        XCTAssertTrue(original.waitForExistence(timeout: 5))
+        XCTAssertEqual(original.label, "45 mil en taxi")
+        original.tap()
+        let attempts = app.staticTexts["Intentos: 1"]
+        reveal(attempts)
+        XCTAssertTrue(attempts.exists)
+        XCTAssertTrue(app.staticTexts["Estado del envío: Por verificar"].exists)
+        let failure = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "unsafe_response")).firstMatch
+        reveal(failure)
+        XCTAssertTrue(failure.waitForExistence(timeout: 5))
+    }
+
     func testExpenseRequiresExplicitConfirmationBeforeCommit() {
         launch()
         requestExpensePreview()
