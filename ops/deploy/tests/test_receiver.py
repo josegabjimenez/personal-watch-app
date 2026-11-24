@@ -23,6 +23,7 @@ from unittest import mock
 from sealed_fixture import FILENAMES, HELPER, LEGACY, canonical, digest, fixture
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "receiver.py"
+SEALED_REMINDER_SOURCE = "20bb5f46956089484f48664546a44ff31e4bdd2a"
 
 
 def load_receiver():
@@ -169,7 +170,12 @@ class ReceiverTests(unittest.TestCase):
         self.assertEqual({name: digest(source) for name, source in runtime.items()}, baseline["artifacts"])
         if count == 12:
             runtime[reminder.SERVER] = reminder.overlay_server(server)
-            runtime.update({name: (repo / "backend" / name).read_bytes() for name in reminder.REMINDER_MODULES})
+            # The manifest covers the historical release. Future Reminder
+            # changes must not alter the input to this negative compatibility test.
+            runtime.update({
+                name: subprocess.check_output(["git", "-C", str(repo), "show", f"{SEALED_REMINDER_SOURCE}:backend/{name}"])
+                for name in reminder.REMINDER_MODULES
+            })
             expected = reminder.load_manifest()
         else:
             self.assertEqual(count, 6)
