@@ -30,6 +30,17 @@ class ReminderRetryable(RuntimeError):
     """No authoritative receipt yet; retain original outbox payload for retry."""
 
 
+class ReminderOccurrencesPending(ReminderRetryable):
+    """Keep the original outbox row retryable while exposing verified progress."""
+
+    def __init__(self, request_id: str, occurrences: list[dict]):
+        super().__init__("reminder_pending_retry")
+        self.response = {
+            "status": "error", "error": "reminder_pending_retry",
+            "request_id": request_id, "domain": DOMAIN, "occurrences": occurrences,
+        }
+
+
 class ReminderConflict(RuntimeError):
     pass
 
@@ -58,6 +69,14 @@ def init_db(path: Path) -> None:
             conn.execute("ALTER TABLE reminder_operation_ledger ADD COLUMN transport TEXT NOT NULL DEFAULT 'sync_v1'")
         if "rest_dispatched" not in columns:
             conn.execute("ALTER TABLE reminder_operation_ledger ADD COLUMN rest_dispatched INTEGER NOT NULL DEFAULT 0")
+        conn.execute("""CREATE TABLE IF NOT EXISTS reminder_occurrence_ledger (
+            request_id TEXT NOT NULL,
+            due_start TEXT NOT NULL,
+            command_uuid TEXT NOT NULL UNIQUE,
+            status TEXT NOT NULL CHECK (status IN ('pending','unverified','saved','elapsed')),
+            task_id TEXT,
+            PRIMARY KEY (request_id, due_start)
+        )""")
 
 
 def _timestamp() -> str:
@@ -174,6 +193,116 @@ def _command_uuid(secret: bytes, kind: str, request_id: str, binding: str) -> st
     return str(uuid.UUID(bytes=hmac.new(secret, material, hashlib.sha256).digest()[:16], version=5))
 
 
+def _freeze_occurrences(path: Path, request_id: str, binding: str, secret: bytes, plan: dict) -> None:
+    """Journal the whole plan and all its independent REST identities together."""
+    with sqlite3.connect(path) as conn:
+        changed = conn.execute("""UPDATE reminder_operation_ledger
+            SET status='reconciliation_required',plan_json=?,updated_at=?
+            WHERE request_id=? AND payload_hash=? AND plan_json IS NULL AND transport='rest_v1'
+              AND status='interpreting' AND rest_dispatched=0 AND task_id IS NULL""",
+            (json.dumps(plan, ensure_ascii=False), _timestamp(), request_id, binding)).rowcount
+        if changed != 1:
+            raise ReminderRetryable("reminder_operation_reconciliation_required")
+        conn.executemany("""INSERT INTO reminder_occurrence_ledger
+            (request_id,due_start,command_uuid,status) VALUES (?,?,?,'pending')""",
+            ((request_id, due["start"], _command_uuid(secret, "occurrence:" + due["start"], request_id, binding))
+             for due in plan["dues"]))
+
+
+def _occurrence_rows(path: Path, request_id: str) -> dict:
+    with sqlite3.connect(path) as conn:
+        conn.row_factory = sqlite3.Row
+        return {row["due_start"]: row for row in conn.execute(
+            "SELECT * FROM reminder_occurrence_ledger WHERE request_id=?", (request_id,))}
+
+
+def _change_occurrence(path: Path, row: sqlite3.Row, status: str, *,
+                       prior_status: str, task_id: str | None = None) -> bool:
+    with sqlite3.connect(path) as conn:
+        return conn.execute("""UPDATE reminder_occurrence_ledger
+            SET status=?,task_id=COALESCE(?,task_id)
+            WHERE request_id=? AND due_start=? AND command_uuid=? AND status=?""",
+            (status, task_id, row["request_id"], row["due_start"], row["command_uuid"], prior_status)).rowcount == 1
+
+
+def _advance_occurrence(path: Path, row: sqlite3.Row, plan: dict, due: dict,
+                        gateway: TodoistGateway, identity: dict, now: Any) -> None:
+    old_status = row["status"]
+    if old_status in {"elapsed", "saved"}:
+        return
+
+    def claim() -> None:
+        if not _change_occurrence(path, row, "unverified", prior_status="pending"):
+            raise RetryableTodoistError("reminder_rest_dispatch_already_claimed")
+
+    def remember_id(task_id: str) -> None:
+        # Preflight can find a known matching task before a dispatch claim.
+        # A returned ID is a reason for read-only recovery if we lose readback.
+        if not _change_occurrence(path, row, "unverified", prior_status="unverified", task_id=task_id):
+            _change_occurrence(path, row, "unverified", prior_status="pending", task_id=task_id)
+
+    occurrence_plan = {"title": plan["title"], "labels": plan["labels"], "due": due}
+    try:
+        if old_status == "unverified":
+            receipt = gateway.reconcile(occurrence_plan, row["command_uuid"], identity, external_id=row["task_id"])
+        elif datetime.fromisoformat(due["start"]) <= now():
+            _change_occurrence(path, row, "elapsed", prior_status="pending")
+            return
+        else:
+            receipt = gateway.create_rest_or_reconcile(
+                occurrence_plan, row["command_uuid"], identity, on_before_post=claim, on_external_id=remember_id)
+    except (RetryableTodoistError, PermanentTodoistError) as error:
+        if isinstance(error, PermanentTodoistError) and str(error) == "todoist_due_elapsed_before_dispatch":
+            _change_occurrence(path, row, "elapsed", prior_status="pending")
+        return
+    if receipt is not None:
+        _change_occurrence(path, row, "saved", prior_status="unverified", task_id=receipt["task_id"])
+
+
+def _execute_occurrences(payload: dict, cfg: Any, plan: dict,
+                         gateway: TodoistGateway, identity: dict, now: Any) -> dict:
+    request_id, path = payload["request_id"], cfg.ledger_path
+    rows = _occurrence_rows(path, request_id)
+    starts = {due["start"] for due in plan["dues"]}
+    if not 2 <= len(starts) == len(plan["dues"]) <= reminder_ai.MAX_SCHEDULES or rows.keys() != starts:
+        # Do not reconstruct a missing dispatch journal from the frozen plan.
+        raise ReminderRetryable("reminder_operation_reconciliation_required")
+
+    for due in plan["dues"]:
+        _advance_occurrence(path, rows[due["start"]], plan, due, gateway, identity, now)
+
+    rows = _occurrence_rows(path, request_id)
+    occurrences = []
+    for due in plan["dues"]:
+        row = rows[due["start"]]
+        occurrence = {"due": due, "status": row["status"]}
+        if row["status"] == "saved":
+            occurrence["todoist_task_id"] = row["task_id"]
+        occurrences.append(occurrence)
+    if any(occurrence["status"] in {"pending", "unverified"} for occurrence in occurrences):
+        raise ReminderOccurrencesPending(request_id, occurrences)
+
+    saved = [occurrence for occurrence in occurrences if occurrence["status"] == "saved"]
+    if saved:
+        first = saved[0]
+        response = _saved(payload, {"title": plan["title"], "due": first["due"]}, {"task_id": first["todoist_task_id"]})
+        # Keep the established committed response while avoiding a singular
+        # ID/due that could be mistaken for the whole reminder.
+        del response["interpreted_due"]
+        response["external_ids"] = {"todoist_task_ids": [occurrence["todoist_task_id"] for occurrence in saved]}
+        title = " ".join(plan["title"].split())[:96]
+        details = " · ".join(f"{item['due']['display']}: {'guardado' if item['status'] == 'saved' else 'hora pasada'}"
+                             for item in occurrences)
+        response["display_message"] = f"{title} · {details} · alertas pendientes de verificar"
+        response["plan"]["notes"] = "Each saved Inbox task and intended time was read back. Default auto-reminders requested."
+    else:
+        response = _no_write(payload, question="Las horas ya pasaron. ¿Para cuándo lo programo en Bogotá?")
+    response["occurrences"] = occurrences
+    _update(path, request_id, status="committed" if saved else "terminal",
+            response_json=json.dumps(response, ensure_ascii=False))
+    return response
+
+
 def _gateway(cfg: Any) -> TodoistGateway:
     credentials = getattr(cfg, "reminder_todoist_credentials_file", None)
     if credentials is not None:
@@ -204,15 +333,18 @@ def execute(payload: dict, cfg: Any, *, now: Any) -> dict:
                         _command_uuid(cfg.secret, "temporary", request_id, binding), _timestamp()))
                 row = conn.execute("SELECT * FROM reminder_operation_ledger WHERE request_id = ?", (request_id,)).fetchone()
             operation = dict(row)
-        if operation["status"] == "reconciliation_required" and not (
-                operation["transport"] == "rest_v1" and operation["rest_dispatched"] == 1):
+        transport = operation["transport"]
+        reconciling = operation["status"] == "reconciliation_required"
+        # Old executors already deny this parent state before any write. New
+        # executors can proceed only with the frozen plan and separate journal.
+        occurrence_parent = reconciling and transport == "rest_v1" and operation["rest_dispatched"] == 0
+        if reconciling and not (occurrence_parent or (transport == "rest_v1" and operation["rest_dispatched"] == 1)):
             raise ReminderRetryable("reminder_operation_reconciliation_required")
         if operation["response_json"]:
             result = json.loads(operation["response_json"])
             if result.get("write_committed"):
                 result.update(status="duplicate", duplicate=True)
             return result
-        transport = operation["transport"]
         if transport not in {"sync_v1", "rest_v1"} or type(operation["rest_dispatched"]) is not int or operation["rest_dispatched"] not in (0, 1):
             raise ReminderRetryable("reminder_operation_reconciliation_required")
         if operation["rest_dispatched"] == 1 and (
@@ -225,6 +357,9 @@ def execute(payload: dict, cfg: Any, *, now: Any) -> dict:
         # Missing server credentials are retryable configuration gates. They are
         # never sourced from a desktop connector or another process environment.
         plan = json.loads(operation["plan_json"]) if operation["plan_json"] else None
+        has_occurrences = plan is not None and "dues" in plan
+        if has_occurrences != occurrence_parent:
+            raise ReminderRetryable("reminder_operation_reconciliation_required")
         gateway = None
         if plan is None:
             try:
@@ -276,7 +411,8 @@ def execute(payload: dict, cfg: Any, *, now: Any) -> dict:
                     api_key=api_key, model=cfg.reminder_model, timeout=cfg.reminder_ai_timeout,
                     available_labels=available_labels, on_usage=settle_usage,
                 )
-                validated = reminder_ai.validate(proposal, payload.get("created_at"), now(), available_labels=available_labels)
+                validated = reminder_ai.validate(proposal, payload.get("created_at"), now(), available_labels=available_labels,
+                                                 capture_text=payload["capture"]["text"])
             except reminder_ai.InterpretationUnavailable as exc:
                 if str(exc) in {"interpreter_refused", "interpreter_incomplete", "interpreter_invalid_output", "interpreter_invalid_schema", "invalid_capture_text"}:
                     response = _no_write(payload, question="No pude interpretar la captura completa. Indica una sola tarea con fecha y hora claras en Bogotá.")
@@ -287,16 +423,30 @@ def execute(payload: dict, cfg: Any, *, now: Any) -> dict:
                 response = _no_write(payload, rejected=validated["status"] == "unsupported", question=validated.get("question"))
                 _update(cfg.ledger_path, request_id, status="terminal", response_json=json.dumps(response, ensure_ascii=False))
                 return response
-            plan = {"title": validated["title"], "due": validated["due"], "labels": validated["labels"]}
-            # This commit precedes even the read-only Todoist preflight. Retrying
-            # must reuse the exact plan and must never re-anchor a relative date.
-            _update(cfg.ledger_path, request_id, status="ready", plan_json=json.dumps(plan, ensure_ascii=False))
-            operation["status"] = "ready"
+            plan = {"title": validated["title"], "labels": validated["labels"]}
+            # Freeze the exact plan before any task preflight. Retrying must
+            # reuse the original dates, even after an occurrence has elapsed.
+            if "dues" in validated:
+                if transport != "rest_v1":
+                    response = _no_write(payload, question="Vuelve a dictar los horarios en un recordatorio nuevo.")
+                    _update(cfg.ledger_path, request_id, status="terminal", response_json=json.dumps(response, ensure_ascii=False))
+                    return response
+                plan["dues"] = validated["dues"]
+                _freeze_occurrences(cfg.ledger_path, request_id, binding, cfg.secret, plan)
+            else:
+                plan["due"] = validated["due"]
+                _update(cfg.ledger_path, request_id, status="ready", plan_json=json.dumps(plan, ensure_ascii=False))
+                operation["status"] = "ready"
 
         gateway = gateway or _gateway(cfg)
         identity = json.loads(operation["identity_json"]) if operation["identity_json"] else None
         if not cfg.reminder_todoist_inbox_id or (identity is not None and identity.get("inbox_project_id") != cfg.reminder_todoist_inbox_id):
             raise ReminderRetryable("reminder_authorization_pending")
+        if "dues" in plan:
+            if (transport != "rest_v1" or identity is None or operation["rest_dispatched"] != 0
+                    or operation["task_id"] is not None):
+                raise ReminderRetryable("reminder_operation_reconciliation_required")
+            return _execute_occurrences(payload, cfg, plan, gateway, identity, now)
         dispatched = (operation["rest_dispatched"] == 1 or operation["task_id"] is not None
                       if transport == "rest_v1" else operation["status"] in {"writing", "uncertain"})
         was_dispatched = dispatched

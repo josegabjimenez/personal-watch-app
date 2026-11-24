@@ -29,6 +29,16 @@ def proposal(**changes):
     return value
 
 
+def clock(hour, day="2026-10-29"):
+    return {"mode": "absolute", "date": day, "time": hour, "offset_minutes": None}
+
+
+def multiple_proposal(*schedules):
+    value = proposal(title="Comprar leche", schedules=list(schedules))
+    del value["schedule"]
+    return value
+
+
 def completed(value=None, *, text=None):
     return {"status": "completed", "output": [
         {"type": "reasoning", "summary": []},
@@ -66,6 +76,21 @@ class InterpretationTests(unittest.TestCase):
                 self.assertEqual(original["captured_at_bogota"], "2026-10-29T09:00:17.123456-05:00")
                 self.assertEqual(original["text"], text)
                 self.assertEqual(original["available_labels"], [])
+
+    def test_spanish_multiple_clock_list_uses_one_strict_ai_proposal(self):
+        text = "Quiero que me recuerdes a las 11 am y a las 2pm que debo comprar leche"
+        proposed = multiple_proposal(clock("14:00"), clock("11:00"))
+        with mock.patch.object(ai, "_post_json", return_value=completed(proposed)) as post:
+            value = ai.interpret(text, CAPTURE, api_key="synthetic")
+        post.assert_called_once()
+        body = json.loads(post.call_args.args[0])
+        self.assertIn("schedules", body["text"]["format"]["schema"]["required"])
+        self.assertEqual(json.loads(body["input"])["text"], text)
+        result = ai.validate(value, CAPTURE, NOW, capture_text=text)
+        self.assertEqual(result["title"], "Comprar leche")
+        self.assertEqual([due["start"] for due in result["dues"]], [
+            "2026-10-29T11:00:00-05:00", "2026-10-29T14:00:00-05:00",
+        ])
 
     def test_model_is_configurable(self):
         with mock.patch.object(ai, "_post_json", return_value=completed()) as post:
@@ -277,6 +302,102 @@ class ValidationTests(unittest.TestCase):
         missing = proposal()
         del missing["labels"]
         self.assertEqual(ai.validate(missing, CAPTURE, NOW)["reason"], "invalid_schema")
+
+    def test_explicit_today_keeps_elapsed_time_and_schedules_the_future_time(self):
+        text = "Recuérdame hoy a las 11 a. m. y a las dos de la tarde que compre leche"
+        captured_at = "2026-10-29T17:00:00Z"
+        noon = datetime.fromisoformat("2026-10-29T12:00:00-05:00")
+        value = multiple_proposal(clock("11:00"), clock("14:00"))
+        ready = ai.validate(value, captured_at, noon, capture_text=text)
+        self.assertEqual([due["start"] for due in ready["dues"]], [
+            "2026-10-29T11:00:00-05:00", "2026-10-29T14:00:00-05:00",
+        ])
+        expired = ai.validate(value, captured_at, noon + timedelta(hours=2), capture_text=text)
+        self.assertEqual(expired["reason"], "elapsed_schedule")
+        rolled = multiple_proposal(clock("11:00", day="2026-10-30"), clock("14:00"))
+        self.assertEqual(ai.validate(rolled, captured_at, noon, capture_text=text)["reason"], "schedule_mismatch")
+
+    def test_undated_clock_list_uses_capture_day_even_across_utc_midnight(self):
+        text = "Quiero que me recuerdes a las 11 am y a las 2pm que debo comprar leche"
+        wrong = multiple_proposal(clock("11:00", day="2026-10-30"), clock("14:00", day="2026-10-30"))
+        self.assertEqual(ai.validate(wrong, CAPTURE, NOW, capture_text=text)["reason"], "schedule_mismatch")
+        capture = "2026-10-30T04:59:00Z"
+        now = datetime.fromisoformat("2026-10-29T23:59:00-05:00")
+        expired = multiple_proposal(clock("11:00"), clock("14:00"))
+        self.assertEqual(ai.validate(expired, capture, now, capture_text=text)["reason"], "elapsed_schedule")
+        self.assertEqual(ai.validate(wrong, capture, now, capture_text=text)["reason"], "schedule_mismatch")
+
+    def test_explicit_today_placement_binds_the_whole_list(self):
+        wrong = multiple_proposal(clock("11:00", day="2026-10-30"), clock("14:00", day="2026-10-30"))
+        for text in ("Hoy quiero que me recuerdes a las 11 am y 2pm que compre leche",
+                     "Recuérdame hoy, a las 11 am y 2pm que compre leche",
+                     "Recuérdame a las 11 am y 2pm de hoy que compre leche",
+                     "Recuérdame a las once de la mañana y 2pm que compre leche"):
+            with self.subTest(text=text):
+                self.assertEqual(ai.validate(wrong, CAPTURE, NOW, capture_text=text)["reason"], "schedule_mismatch")
+
+    def test_conflicting_days_on_one_clock_list_require_clarification(self):
+        text = "Recuérdame hoy a las 11 am y a las 2 pm mañana"
+        value = multiple_proposal(clock("11:00"), clock("14:00"))
+        self.assertEqual(ai.validate(value, CAPTURE, NOW, capture_text=text)["reason"], "ambiguous_capture")
+
+    def test_additive_connectors_cannot_drop_an_explicit_time(self):
+        for connector in ("y también a las", "y tambien", "y luego"):
+            text = f"Recuérdame a las 11 am {connector} 2 pm que compre leche"
+            with self.subTest(text=text):
+                complete = multiple_proposal(clock("11:00"), clock("14:00"))
+                missing = multiple_proposal(clock("11:00"))
+                self.assertEqual(ai.validate(complete, CAPTURE, NOW, capture_text=text)["status"], "ready")
+                self.assertEqual(ai.validate(missing, CAPTURE, NOW, capture_text=text)["reason"], "schedule_mismatch")
+
+    def test_dozen_at_night_is_midnight_in_a_clock_list(self):
+        text = "Recuérdame mañana a las doce de la noche y a las 2 pm que compre leche"
+        complete = multiple_proposal(clock("00:00", day="2026-10-30"), clock("14:00", day="2026-10-30"))
+        noon = multiple_proposal(clock("12:00", day="2026-10-30"), clock("14:00", day="2026-10-30"))
+        ready = ai.validate(complete, CAPTURE, NOW, capture_text=text)
+        self.assertEqual(ready["dues"][0]["start"], "2026-10-30T00:00:00-05:00")
+        self.assertEqual(ai.validate(noon, CAPTURE, NOW, capture_text=text)["reason"], "schedule_mismatch")
+
+    def test_explicit_additional_day_can_coexist_with_a_two_time_list(self):
+        text = "Recuérdame hoy a las 11 am y a las 2 pm y mañana a las 3 pm que compre leche"
+        value = multiple_proposal(clock("11:00"), clock("14:00"), clock("15:00", day="2026-10-30"))
+        self.assertEqual(ai.validate(value, CAPTURE, NOW, capture_text=text)["status"], "ready")
+
+    def test_comma_after_single_time_can_introduce_the_task(self):
+        text = "Recuérdame mañana a las 2 pm, una cosa pendiente del laboratorio"
+        result = ai.validate(proposal(), CAPTURE, NOW, capture_text=text)
+        self.assertEqual(result["due"]["start"], "2026-10-30T14:00:00-05:00")
+
+    def test_duplicate_clocks_collapse_to_the_existing_single_time_shape(self):
+        text = "Recuérdame a las 11 am y a las 11:00 que compre leche"
+        result = ai.validate(multiple_proposal(clock("11:00"), clock("11:00")), CAPTURE, NOW, capture_text=text)
+        self.assertEqual(result["due"]["start"], "2026-10-29T11:00:00-05:00")
+        self.assertNotIn("dues", result)
+
+    def test_clock_list_never_accepts_ambiguous_or_incomplete_proposals(self):
+        value = multiple_proposal(clock("11:00"), clock("14:00"))
+        for text in ("Recuérdame a las 11 am y a las 2", "Recuérdame a las 11 am o a las 2 pm"):
+            with self.subTest(text=text):
+                self.assertEqual(ai.validate(value, CAPTURE, NOW, capture_text=text)["reason"], "ambiguous_capture")
+        text = "Recuérdame a las 11 am y a las 2 pm"
+        missing = multiple_proposal(clock("14:00"))
+        self.assertEqual(ai.validate(missing, CAPTURE, NOW, capture_text=text)["reason"], "schedule_mismatch")
+
+    def test_clock_list_supports_comma_separated_24_hour_times(self):
+        text = "Mañana a las 11:45, 14:00 y 18:00 recuérdame que compre leche"
+        value = multiple_proposal(*(clock(hour, day="2026-10-30") for hour in ("11:45", "14:00", "18:00")))
+        ready = ai.validate(value, CAPTURE, NOW, capture_text=text)
+        self.assertEqual(len(ready["dues"]), 3)
+        omitted = multiple_proposal(clock("11:45", day="2026-10-30"), clock("14:00", day="2026-10-30"))
+        self.assertEqual(ai.validate(omitted, CAPTURE, NOW, capture_text=text)["reason"], "schedule_mismatch")
+
+    def test_new_proposal_shape_is_bounded_and_each_time_must_be_valid(self):
+        for value in (multiple_proposal(*[clock("11:00")] * (ai.MAX_SCHEDULES + 1)),
+                      multiple_proposal(clock("11:00"), None),
+                      {**multiple_proposal(clock("11:00")), "schedule": clock("11:00")}):
+            self.assertEqual(ai.validate(value, CAPTURE, NOW)["reason"], "invalid_schema")
+        value = multiple_proposal(clock("11:00"), clock("24:00"))
+        self.assertEqual(ai.validate(value, CAPTURE, NOW)["reason"], "invalid_schedule")
 
     def test_original_capture_relative_schedule_does_not_shift_on_retry(self):
         value = proposal(schedule={"mode": "relative", "date": None, "time": None, "offset_minutes": 20})

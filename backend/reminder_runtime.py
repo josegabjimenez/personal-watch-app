@@ -182,6 +182,8 @@ def _handle_reminder(handler: Any, api: dict, raw: bytes, payload: dict) -> None
                 response = reminder_capture.execute(payload, active, now=lambda: datetime.now(timezone.utc))
     except reminder_capture.ReminderConflict:
         return reply(409, {"status": "rejected", "error": "request_id_conflict", "request_id": request_id})
+    except reminder_capture.ReminderOccurrencesPending as error:
+        return reply(502, error.response)
     except (reminder_capture.ReminderRetryable, ValueError) as error:
         configuration = str(error) in {"reminder_budget_pending", "reminder_configuration_unavailable", "reminder_authorization_pending", "invalid_reminder_timeout"}
         return reply(502, {"status": "error", "error": "reminder_configuration_pending" if configuration else "reminder_pending_retry", "request_id": request_id, "domain": DOMAIN})

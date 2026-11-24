@@ -1696,6 +1696,8 @@ def execute_reminder_capture(
         return reminder_capture.execute(payload, cfg, now=reminder_dispatch_now)
     except reminder_capture.ReminderConflict:
         raise WriteExecutionError("request_id_conflict") from None
+    except reminder_capture.ReminderOccurrencesPending:
+        raise
     except reminder_capture.ReminderRetryable as error:
         code = "reminder_configuration_pending" if str(error) in {"reminder_budget_pending", "reminder_configuration_unavailable", "reminder_authorization_pending"} else "reminder_pending_retry"
         raise WriteExecutionError(code) from None
@@ -1934,6 +1936,10 @@ class MobileCaptureHandler(BaseHTTPRequestHandler):
                 )
                 conn.commit()
             json_response(self, HTTPStatus.SERVICE_UNAVAILABLE, pending)
+            return
+        except reminder_capture.ReminderOccurrencesPending as error:
+            # Keep the original request claim in processing for the next retry.
+            json_response(self, HTTPStatus.BAD_GATEWAY, error.response)
             return
         except WriteExecutionError as error:
             response = {
