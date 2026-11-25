@@ -579,6 +579,43 @@ class ReminderCaptureTests(unittest.TestCase):
         code,replay=self.send(endpoint,payload());self.assertEqual(code,200);self.assertEqual(replay["status"],"duplicate")
         self.assertEqual(self.model.call_count,1);self.assertEqual(len(self.gateway.remote),1)
 
+    def test_multi_time_retry_posts_only_the_occurrence_without_a_dispatch_claim(self):
+        def proposal_for_both():
+            value = proposal(title="Comprar leche")
+            first = value.pop("schedule")
+            value["schedules"] = [first, {**first, "time": "11:00"}]
+            return value
+
+        self.model.return_value = proposal_for_both()
+        endpoint = self.start_server()
+        value = payload(text="Recuérdame mañana a las 11 am y a las 2pm que debo comprar leche")
+        create = self.gateway.create_rest_or_reconcile
+
+        def timeout_before_second_post(plan, *args, **kwargs):
+            if plan["due"]["start"].startswith("2026-10-30T14:00"):
+                raise RetryableTodoistError("synthetic timeout before dispatch")
+            return create(plan, *args, **kwargs)
+
+        with mock.patch.object(self.gateway, "create_rest_or_reconcile", side_effect=timeout_before_second_post):
+            code, partial = self.send(endpoint, value)
+        self.assertEqual((code, partial["error"]), (502, "reminder_pending_retry"))
+        self.assertEqual([item["status"] for item in partial["occurrences"]], ["saved", "pending"])
+        self.assertEqual(len(self.gateway.posts), 1)
+
+        code, complete = self.send(endpoint, value)
+        self.assertEqual((code, complete["status"]), (200, "committed"))
+        self.assertEqual([item["status"] for item in complete["occurrences"]], ["saved", "saved"])
+        self.assertEqual(self.model.call_count, 1)
+        original_commands = {post[0] for post in self.gateway.posts}
+        self.assertEqual(len(original_commands), 2)
+
+        # Deliberately submitting identical dictation in a new capture remains allowed.
+        code, deliberate = self.send(endpoint, {**value, "request_id": "synthetic-new-reminder"})
+        self.assertEqual((code, deliberate["status"]), (200, "committed"))
+        self.assertEqual(self.model.call_count, 2)
+        self.assertEqual(len(self.gateway.posts), 4)
+        self.assertTrue(original_commands.isdisjoint({post[0] for post in self.gateway.posts[2:]}))
+
     def test_budget_configuration_gate_retries_original_capture_after_setup(self):
         self.cfg = replace(self.cfg, reminder_monthly_limit_usd="0")
         endpoint = self.start_server()

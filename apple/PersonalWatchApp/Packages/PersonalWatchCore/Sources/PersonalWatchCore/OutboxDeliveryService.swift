@@ -7,12 +7,15 @@ public enum OutboxDeliveryFailure: Error, Equatable, LocalizedError, Sendable {
     case unsafeResponse
     case unknown
     case reminderPending
+    case reminderPartial(String)
     case reminderConfigurationPending
 
     public var errorDescription: String? {
         switch self {
         case .reminderPending:
             return "Recordatorio pendiente de verificar · reintenta esta captura"
+        case .reminderPartial(let summary):
+            return summary
         case .reminderConfigurationPending:
             return "Recordatorio pendiente · revisa la configuración o el límite de IA"
         case .http(401):
@@ -32,7 +35,7 @@ public enum OutboxDeliveryFailure: Error, Equatable, LocalizedError, Sendable {
 
     public var isTransientTransportFailure: Bool {
         switch self {
-        case .network, .reminderPending, .reminderConfigurationPending:
+        case .network, .reminderPending, .reminderPartial, .reminderConfigurationPending:
             return true
         case .http(let statusCode):
             return statusCode == 502 || statusCode == 503 || statusCode == 504
@@ -43,7 +46,7 @@ public enum OutboxDeliveryFailure: Error, Equatable, LocalizedError, Sendable {
 
     public var storageCode: String {
         switch self {
-        case .reminderPending:
+        case .reminderPending, .reminderPartial:
             return "reminder_pending_verification"
         case .reminderConfigurationPending:
             return "reminder_configuration_pending"
@@ -151,22 +154,75 @@ public actor OutboxDeliveryService {
         return inactive
     }
 
-    // An uncertain reminder must remain failed/retryable in the original
-    // outbox row. Use only fixed local copy from a strictly correlated error;
-    // never present an arbitrary error body's claims or mark a receipt sent.
+    // Uncertain reminders remain retryable on the original outbox row.
+    // Compose any detail locally from a correlated, bounded progress envelope.
     static func reminderPendingFailure(_ error: Error, for payload: CapturePayloadV1) -> OutboxDeliveryFailure? {
         guard payload.route == .reminder, isSafeRequest(payload), !payload.context.dryRun,
               case WebhookClientError.unacceptableStatus(let status, let body) = error,
               status == 502, body.utf8.count <= 4096,
-              let value = try? JSONSerialization.jsonObject(with: Data(body.utf8)) as? [String: String],
-              Set(value.keys) == Set(["status", "error", "request_id", "domain"]),
-              value["status"] == "error", value["request_id"] == payload.requestID,
-              value["domain"] == CaptureRoute.reminder.domain.rawValue else { return nil }
-        switch value["error"] {
-        case "reminder_pending_retry": return .reminderPending
-        case "reminder_configuration_pending": return .reminderConfigurationPending
-        default: return nil
+              let value = try? JSONSerialization.jsonObject(with: Data(body.utf8)) as? [String: Any],
+              value["status"] as? String == "error", value["request_id"] as? String == payload.requestID,
+              value["domain"] as? String == CaptureRoute.reminder.domain.rawValue else { return nil }
+        let envelopeKeys: Set<String> = ["status", "error", "request_id", "domain"]
+        let errorCode = value["error"] as? String
+        if Set(value.keys) == envelopeKeys {
+            switch errorCode {
+            case "reminder_pending_retry": return .reminderPending
+            case "reminder_configuration_pending": return .reminderConfigurationPending
+            default: return nil
+            }
         }
+        guard errorCode == "reminder_pending_retry",
+              Set(value.keys) == envelopeKeys.union(["occurrences"]),
+              let occurrences = value["occurrences"] as? [[String: Any]],
+              let summary = reminderProgressSummary(occurrences) else { return nil }
+        return .reminderPartial(summary)
+    }
+
+    private static func reminderProgressSummary(_ occurrences: [[String: Any]]) -> String? {
+        guard (2...5).contains(occurrences.count) else { return nil }
+        let iso = ISO8601DateFormatter()
+        let requiredKeys: Set<String> = ["due", "status"]
+        var previousDate: Date?
+        var needsRetry = false
+        var lines: [String] = []
+        for occurrence in occurrences {
+            guard let status = occurrence["status"] as? String,
+                  let due = occurrence["due"] as? [String: Any],
+                  Set(due.keys) == Set(["start", "timezone", "display"]),
+                  due["timezone"] as? String == "America/Bogota",
+                  due["display"] is String, let start = due["start"] as? String,
+                  start.range(of: #"\A[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]{1,6})?-05:00\z"#,
+                              options: .regularExpression) != nil else { return nil }
+            iso.formatOptions = start.contains(".")
+                ? [.withInternetDateTime, .withFractionalSeconds] : [.withInternetDateTime]
+            guard let date = iso.date(from: start), previousDate.map({ $0 < date }) ?? true else { return nil }
+            previousDate = date
+
+            let label: String
+            if status == "saved" {
+                guard Set(occurrence.keys) == requiredKeys.union(["todoist_task_id"]),
+                      let taskID = occurrence["todoist_task_id"] as? String,
+                      taskID.range(of: #"\A[A-Za-z0-9_-]{1,200}\z"#, options: .regularExpression) != nil else { return nil }
+                label = "guardado en Todoist"
+            } else {
+                guard Set(occurrence.keys) == requiredKeys else { return nil }
+                switch status {
+                case "elapsed": label = "no programado (la hora pasó)"
+                case "pending":
+                    label = "pendiente de envío"
+                    needsRetry = true
+                case "unverified":
+                    label = "resultado por verificar"
+                    needsRetry = true
+                default: return nil
+                }
+            }
+            let clock = start.prefix(16).replacingOccurrences(of: "T", with: " ")
+            lines.append("\(clock) \(label)")
+        }
+        guard needsRetry else { return nil }
+        return "Horarios en Bogotá · " + lines.joined(separator: " · ") + " · reintenta esta captura"
     }
 
     private static func classify(_ error: Error) -> OutboxDeliveryFailure {

@@ -39,7 +39,7 @@ def load_fixture():
 
 fixture = load_fixture()
 build = fixture.build
-NOW = datetime.fromisoformat("2026-11-05T11:00:00-05:00")
+NOW = datetime.fromisoformat("2026-11-05T10:30:00-05:00")
 IDENTITY = {"user_id": "synthetic-user", "inbox_project_id": "synthetic-inbox", "timezone": "America/Bogota"}
 
 
@@ -51,6 +51,23 @@ def payload(request_id="synthetic-exact-reminder"):
         "capture": {"text": "Recuérdame llamar a mamá en dos horas; la llamada toma cinco minutos"},
         "context": {"dry_run": False, "allow_write": True, "allow_firefly_write": False},
     }
+
+
+def multiple_payload(*, today=False):
+    value = payload()
+    day = "hoy " if today else ""
+    value["capture"]["text"] = f"Quiero que me recuerdes {day}a las 11 am y a las 2pm que debo comprar leche"
+    return value
+
+
+def multiple_proposal():
+    value = proposal()
+    del value["schedule"]
+    value.update(title="Comprar leche", labels=[], schedules=[
+        {"mode": "absolute", "date": "2026-11-05", "time": hour, "offset_minutes": None}
+        for hour in ("11:00", "14:00")
+    ])
+    return value
 
 
 def proposal():
@@ -72,6 +89,7 @@ class SyntheticTodoist:
         self.tasks = {}
         self.command_ids = {}
         self.lose_ack = False
+        self.lose_ack_due = None
         self.fail_before_sync = False
         self.bad_readback = False
 
@@ -97,9 +115,16 @@ class SyntheticTodoist:
             self.test.assertTrue(callable(on_before_send))
             on_before_send()
             operation = self.test.operation()
-            self.test.assertEqual((operation["transport"], operation["rest_dispatched"], operation["status"]), ("rest_v1", 1, "reconciliation_required"))
-            self.test.assertEqual(operation["command_uuid"], request_id)
             frozen = json.loads(operation["plan_json"])
+            if "dues" in frozen:
+                rows = self.test.reminders._occurrence_rows(self.test.cfg.ledger_path, operation["request_id"])
+                self.test.assertEqual(set(rows), {due["start"] for due in frozen["dues"]})
+                row = next(row for row in rows.values() if row["command_uuid"] == request_id)
+                self.test.assertEqual(row["status"], "unverified")
+            else:
+                self.test.assertEqual((operation["transport"], operation["rest_dispatched"], operation["status"]),
+                                      ("rest_v1", 1, "reconciliation_required"))
+                self.test.assertEqual(operation["command_uuid"], request_id)
             self.test.assertEqual(frozen["title"], json_body["content"])
             self.test.assertEqual(frozen["labels"], json_body["labels"])
             self.test.assertIs(json_body["auto_reminder"], True)
@@ -116,8 +141,9 @@ class SyntheticTodoist:
                 "labels": list(json_body["labels"]), "priority": json_body["priority"],
                 "parent_id": None, "section_id": None, "is_deleted": False, "checked": False, "deadline": None,
             }
-            if self.lose_ack:
+            if self.lose_ack or self.lose_ack_due == json_body["due_datetime"]:
                 self.lose_ack = False
+                self.lose_ack_due = None
                 raise self.test.todoist.RetryableTodoistError("synthetic provider lost acknowledgement")
             return copy.deepcopy(self.tasks[identifier])
         if method == "POST" and path == "/sync":
@@ -214,6 +240,7 @@ class ExactHistoricalReminderRuntimeTests(unittest.TestCase):
         self.grocery_state = self.grocery_fingerprints()
         self.provider = SyntheticTodoist(self)
         self.todoist_transport = self.stack.enter_context(mock.patch.object(self.todoist.TodoistGateway, "_request", autospec=True, side_effect=self.provider.request))
+        self.model_proposal = proposal()
         self.model = self.stack.enter_context(mock.patch.object(self.ai, "_post_json", side_effect=self.model_response))
         self.stack.enter_context(mock.patch.object(self.reminders, "_token", return_value="synthetic-server-token"))
         self.stack.enter_context(mock.patch.object(self.todoist, "dispatch_now", side_effect=lambda: self.current))
@@ -246,7 +273,7 @@ class ExactHistoricalReminderRuntimeTests(unittest.TestCase):
             "status": "completed", "model": "gpt-6-luna", "service_tier": "default",
             "usage": {"input_tokens": 1000, "output_tokens": 100, "total_tokens": 1100},
             "output": [{"type": "message", "role": "assistant", "status": "completed",
-                        "content": [{"type": "output_text", "text": json.dumps(proposal(), ensure_ascii=False)}]}],
+                        "content": [{"type": "output_text", "text": json.dumps(self.model_proposal, ensure_ascii=False)}]}],
         }
 
     @staticmethod
@@ -334,6 +361,65 @@ class ExactHistoricalReminderRuntimeTests(unittest.TestCase):
         self.assertEqual(len(self.provider.rest_requests), 1)
         self.assertEqual(self.provider.commands, [])
         self.assertEqual(len(self.provider.calls), before_calls)
+
+    def test_two_timed_rest_tasks_resume_after_second_post_loses_ack(self):
+        value = multiple_payload()
+        self.model_proposal = multiple_proposal()
+        self.provider.lose_ack_due = "2026-11-05T19:00:00Z"
+        code, pending = self.invoke(value)
+        self.assertEqual((code, pending["error"]), (502, "reminder_pending_retry"))
+        self.assertEqual([item["status"] for item in pending["occurrences"]], ["saved", "unverified"])
+        self.assertEqual(pending["occurrences"][0]["todoist_task_id"], "synthetic-task-1")
+        self.assertNotIn("todoist_task_id", pending["occurrences"][1])
+        self.assertEqual(self.parent()["status"], "processing")
+        self.assertEqual(self.invoke(multiple_payload(today=True))[0], 409)
+        posts = self.provider.rest_requests
+        self.assertEqual([post["body"]["due_datetime"] for post in posts],
+                         ["2026-11-05T16:00:00Z", "2026-11-05T19:00:00Z"])
+        self.assertEqual({post["body"]["content"] for post in posts}, {"Comprar leche"})
+        self.assertEqual(len({post["request_id"] for post in posts}), 2)
+        self.assertEqual(self.provider.commands, [])
+
+        self.current = datetime.fromisoformat("2026-11-05T14:10:00-05:00")
+        code, saved = self.invoke(value)
+        self.assertEqual((code, saved["status"]), (200, "committed"))
+        self.assertEqual([item["status"] for item in saved["occurrences"]], ["saved", "saved"])
+        self.assertFalse(saved["notification_verified"])
+        self.assertEqual(saved["external_ids"], {"todoist_task_ids": ["synthetic-task-1", "synthetic-task-2"]})
+        code, replay = self.invoke(value)
+        self.assertEqual((code, replay["status"]), (200, "duplicate"))
+        self.assertEqual(replay["occurrences"], saved["occurrences"])
+        self.assertEqual(self.model.call_count, 1)
+        self.assertEqual(len(posts), 2)
+        self.assertEqual(len(self.provider.tasks), 2)
+
+    def test_today_elapsed_occurrence_is_shown_and_never_sent(self):
+        value = multiple_payload(today=True)
+        value["created_at"] = "2026-11-05T12:00:00-05:00"
+        self.current = datetime.fromisoformat("2026-11-05T12:01:00-05:00")
+        self.model_proposal = multiple_proposal()
+        code, saved = self.invoke(value)
+        self.assertEqual((code, saved["status"]), (200, "committed"))
+        self.assertEqual([item["status"] for item in saved["occurrences"]], ["elapsed", "saved"])
+        self.assertIn("11:00 Bogotá: hora pasada", saved["display_message"])
+        self.assertIn("14:00 Bogotá: guardado", saved["display_message"])
+        self.assertEqual([post["body"]["due_datetime"] for post in self.provider.rest_requests],
+                         ["2026-11-05T19:00:00Z"])
+
+    def test_missing_occurrence_journal_never_reinterprets_or_dispatches(self):
+        value = multiple_payload()
+        self.model_proposal = multiple_proposal()
+        self.provider.lose_ack_due = "2026-11-05T19:00:00Z"
+        self.assertEqual(self.invoke(value)[0], 502)
+        self.assertEqual(self.operation()["status"], "reconciliation_required")
+        self.assertEqual(self.operation()["rest_dispatched"], 0)
+        with sqlite3.connect(self.cfg.ledger_path) as conn:
+            conn.execute("DELETE FROM reminder_occurrence_ledger WHERE status='unverified'")
+        conn.close()
+        code, pending = self.invoke(value)
+        self.assertEqual((code, pending["error"]), (502, "reminder_pending_retry"))
+        self.assertEqual(self.model.call_count, 1)
+        self.assertEqual(len(self.provider.rest_requests), 2)
 
     def test_raw_hash_conflict_409_never_replans_or_mutates(self):
         self.invoke()
